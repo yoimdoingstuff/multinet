@@ -19,7 +19,7 @@ jobs:
       - name: Install package
         run: cmake --install build --prefix install
       - name: Configure installed-package consumer
-        run: cmake -S tests/installed_consumer -B build/installed-consumer -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install
+        run: cmake -S tests/installed_consumer -B build/installed-consumer -DMultiNet_DIR=${{ github.workspace }}/install/lib/cmake/MultiNet
       - name: Build and run installed-package consumer
         run: |
           cmake --build build/installed-consumer --parallel
@@ -38,7 +38,7 @@ jobs:
       - name: Install package
         run: cmake --install build --config Release --prefix install
       - name: Configure installed-package consumer
-        run: cmake -S tests/installed_consumer -B build/installed-consumer -A x64 -DCMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE\install
+        run: cmake -S tests/installed_consumer -B build/installed-consumer -A x64 -DMultiNet_DIR=${{ github.workspace }}/install/lib/cmake/MultiNet
       - name: Build and run installed-package consumer
         shell: pwsh
         run: |
