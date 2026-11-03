@@ -259,9 +259,10 @@ int main(void) {
     }
     if (discovered_count != 1) {
         mn_get_info(scanner, &scanner_info);
-        fprintf(stderr, "DIAG: secure discovery rooms=%u status=%u last_error='%s'\n",
+        mn_get_info(host, &host_info);
+        fprintf(stderr, "DIAG: secure discovery rooms=%u status=%u scanner='%s' host='%s'\n",
                 (unsigned)discovered_count, (unsigned)scanner_info.status,
-                scanner_info.last_error);
+                scanner_info.last_error, host_info.last_error);
     }
     CHECK(discovered_count == 1 &&
           strcmp(discovered_rooms[0].name, "Local Test") == 0,
