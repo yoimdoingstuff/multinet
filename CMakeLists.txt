@@ -15,12 +15,12 @@ target_include_directories(multinet PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 if(NOT WIN32)
-    target_compile_definitions(multinet PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_definitions(multinet PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE=1)
 endif()
 
 if(WIN32)
     target_compile_definitions(multinet PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(multinet PUBLIC ws2_32 bcrypt)
+    target_link_libraries(multinet PUBLIC ws2_32 bcrypt iphlpapi)
 elseif(UNIX)
     target_link_libraries(multinet PUBLIC m)
 endif()

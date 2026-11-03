@@ -71,14 +71,62 @@ static unsigned short parse_port(const char *text, unsigned short fallback) {
 static void print_usage(const char *executable) {
     printf("MultiNet %s demo\n\n", mn_version());
     printf("Usage:\n");
+    printf("  %s interfaces\n", executable);
     printf("  %s host <player-name> [room-name] [port]\n", executable);
+    printf("  %s host-on <local-ipv4> <player-name> [room-name] [port]\n", executable);
     printf("  %s join <ipv4-or-hostname> <player-name> [port]\n", executable);
-    printf("  %s scan [port] [host-address]\n\n", executable);
+    printf("  %s join-from <local-ipv4> <host-address> <player-name> [port]\n", executable);
+    printf("  %s scan [port] [host-address]\n", executable);
+    printf("  %s scan-on <local-ipv4> [port]\n\n", executable);
     printf("Host and join run the live demo. Open two terminals and join 127.0.0.1\n");
     printf("to test on one PC, or use the host PC's LAN address from another PC.\n");
+    printf("Use 'interfaces' to list Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP adapters.\n");
+    printf("Use host-on/join-from/scan-on to select one adapter explicitly.\n");
+    printf("Bluetooth PAN and Wi-Fi Direct must first be connected in the operating system.\n");
     printf("When broadcast discovery is filtered, scan with a host address or join directly.\n");
     printf("Controls: WASD move the demo player, M starts the match (host),\n");
     printf("          B broadcasts a test message, Q quits.\n");
+}
+
+
+static const char *interface_type_name(mn_interface_type type) {
+    switch (type) {
+        case MN_INTERFACE_LOOPBACK: return "loopback";
+        case MN_INTERFACE_ETHERNET: return "ethernet";
+        case MN_INTERFACE_WIFI: return "wifi";
+        case MN_INTERFACE_WIFI_DIRECT: return "wi-fi-direct";
+        case MN_INTERFACE_BLUETOOTH_PAN: return "bluetooth-pan";
+        default: return "other";
+    }
+}
+
+static void print_interfaces(void) {
+    mn_interface interfaces[64];
+    size_t count = mn_get_interfaces(interfaces, 64);
+    size_t i;
+    printf("Local IPv4 interfaces (%zu):\\n", count);
+    for (i = 0; i < count && i < 64; ++i) {
+        printf("  %-16s %-14s %-16s mask %-16s broadcast %s\\n",
+               interface_type_name(interfaces[i].type),
+               interfaces[i].name, interfaces[i].address,
+               interfaces[i].netmask[0] ? interfaces[i].netmask : "-",
+               interfaces[i].broadcast[0] ? interfaces[i].broadcast : "-");
+    }
+    printf("\\nBluetooth PAN / Wi-Fi Direct appear here only after the OS has connected them.\\n");
+}
+
+static int find_interface(const char *address, mn_interface *out_interface) {
+    mn_interface interfaces[64];
+    size_t count = mn_get_interfaces(interfaces, 64);
+    size_t i;
+    if (!address || !out_interface) return 0;
+    for (i = 0; i < count && i < 64; ++i) {
+        if (strcmp(interfaces[i].address, address) == 0) {
+            *out_interface = interfaces[i];
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void print_rooms(mn_instance *network) {
@@ -134,23 +182,41 @@ static void drain_events(mn_instance *network) {
     }
 }
 
-static int run_scan(const mn_config *config, const char *target_host) {
+static int run_scan(const mn_config *config, const char *target_host,
+                    const char *local_ipv4) {
     mn_instance *network = mn_create(config);
     double start, previous;
     if (!network) {
         fprintf(stderr, "Could not initialise MultiNet. Check socket permissions/firewall.\n");
         return 1;
     }
-    if (!(target_host ? mn_discover_at(network, target_host, config->port)
-                      : mn_discover(network))) {
-        mn_info info;
-        mn_get_info(network, &info);
-        fprintf(stderr, "Discovery failed: %s\n", info.last_error);
-        mn_destroy(network);
-        return 1;
+    {
+        mn_interface selected_interface;
+        int started;
+        if (local_ipv4) {
+            if (!find_interface(local_ipv4, &selected_interface)) {
+                fprintf(stderr, "No local IPv4 interface has address %s. Use 'interfaces' to list adapters.\n",
+                        local_ipv4);
+                mn_destroy(network);
+                return 1;
+            }
+            started = mn_discover_on(network, &selected_interface);
+        } else if (target_host) {
+            started = mn_discover_at(network, target_host, config->port);
+        } else {
+            started = mn_discover(network);
+        }
+        if (!started) {
+            mn_info info;
+            mn_get_info(network, &info);
+            fprintf(stderr, "Discovery failed: %s\n", info.last_error);
+            mn_destroy(network);
+            return 1;
+        }
     }
     printf("Searching %s for MultiNet rooms on UDP port %u...\n",
-           target_host ? target_host : "the local network", (unsigned)config->port);
+           local_ipv4 ? local_ipv4 : (target_host ? target_host : "the local network"),
+           (unsigned)config->port);
     start = monotonic_seconds();
     previous = start;
     while (monotonic_seconds() - start < config->discovery_seconds + 0.2) {
@@ -166,8 +232,9 @@ static int run_scan(const mn_config *config, const char *target_host) {
 }
 
 static int run_session(const mn_config *config, int hosting,
-                       const char *address, const char *player_name,
-                       const char *room_name, uint8_t max_players) {
+                       const char *local_ipv4, const char *address,
+                       const char *player_name, const char *room_name,
+                       uint8_t max_players) {
     mn_instance *network = mn_create(config);
     mn_player local;
     mn_info info;
@@ -178,7 +245,8 @@ static int run_session(const mn_config *config, int hosting,
         return 1;
     }
     if (hosting) {
-        if (!mn_host(network, player_name, room_name, max_players)) {
+        if (!(local_ipv4 ? mn_host_on(network, player_name, room_name, max_players, local_ipv4)
+                         : mn_host(network, player_name, room_name, max_players))) {
             mn_get_info(network, &info);
             fprintf(stderr, "Host failed: %s\n", info.last_error);
             mn_destroy(network);
@@ -187,7 +255,8 @@ static int run_session(const mn_config *config, int hosting,
         printf("Hosting '%s' as %s on UDP %u.\n", room_name, player_name,
                (unsigned)config->port);
     } else {
-        if (!mn_join(network, address, config->port, player_name)) {
+        if (!(local_ipv4 ? mn_join_from(network, local_ipv4, address, config->port, player_name)
+                         : mn_join(network, address, config->port, player_name))) {
             mn_get_info(network, &info);
             fprintf(stderr, "Join failed: %s\n", info.last_error);
             mn_destroy(network);
@@ -274,19 +343,41 @@ int main(int argc, char **argv) {
     mn_config_init(&config);
     if (strcmp(argv[1], "scan") == 0) {
         config.port = argc >= 3 ? parse_port(argv[2], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
-        return run_scan(&config, argc >= 4 ? argv[3] : NULL);
+        return run_scan(&config, argc >= 4 ? argv[3] : NULL, NULL);
+    }
+    if (strcmp(argv[1], "scan-on") == 0 && argc >= 3) {
+        config.port = argc >= 4 ? parse_port(argv[3], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
+        return run_scan(&config, NULL, argv[2]);
+    }
+    if (strcmp(argv[1], "interfaces") == 0) {
+        print_interfaces();
+        return 0;
     }
     if (strcmp(argv[1], "host") == 0) {
         const char *name = argc >= 3 ? argv[2] : "Host";
         const char *room = argc >= 4 ? argv[3] : "MultiNet Test Room";
         config.port = argc >= 5 ? parse_port(argv[4], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
-        return run_session(&config, 1, NULL, name, room, MN_MAX_PLAYERS);
+        return run_session(&config, 1, NULL, NULL, name, room, MN_MAX_PLAYERS);
+    }
+    if (strcmp(argv[1], "host-on") == 0 && argc >= 4) {
+        const char *local_ipv4 = argv[2];
+        const char *name = argv[3];
+        const char *room = argc >= 5 ? argv[4] : "MultiNet Interface Test";
+        config.port = argc >= 6 ? parse_port(argv[5], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
+        return run_session(&config, 1, local_ipv4, NULL, name, room, MN_MAX_PLAYERS);
     }
     if (strcmp(argv[1], "join") == 0 && argc >= 4) {
         const char *address = argv[2];
         const char *name = argv[3];
         config.port = argc >= 5 ? parse_port(argv[4], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
-        return run_session(&config, 0, address, name, NULL, MN_MAX_PLAYERS);
+        return run_session(&config, 0, NULL, address, name, NULL, MN_MAX_PLAYERS);
+    }
+    if (strcmp(argv[1], "join-from") == 0 && argc >= 5) {
+        const char *local_ipv4 = argv[2];
+        const char *address = argv[3];
+        const char *name = argv[4];
+        config.port = argc >= 6 ? parse_port(argv[5], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
+        return run_session(&config, 0, local_ipv4, address, name, NULL, MN_MAX_PLAYERS);
     }
     print_usage(argv[0]);
     return 2;

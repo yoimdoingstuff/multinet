@@ -31,6 +31,10 @@ int main(void) {
     mn_room discovered_rooms[MN_MAX_ROOMS];
     size_t discovered_count = 0;
     mn_instance *extra_clients[MN_MAX_PLAYERS - 2u] = {0};
+    mn_interface interfaces[64];
+    mn_interface loopback_interface;
+    size_t interface_count, interface_index;
+    int found_loopback = 0;
     mn_info host_info, client_info;
     mn_player state, received;
     mn_event event;
@@ -47,7 +51,21 @@ int main(void) {
     scanner = mn_create(&config);
     CHECK(host != NULL && client != NULL && scanner != NULL,
           "create independent host, client and discovery instances");
-    CHECK(mn_host(host, "Host", "Local Test", MN_MAX_PLAYERS), "host local room");
+    interface_count = mn_get_interfaces(interfaces, 64);
+    CHECK(interface_count > 0, "enumerate local IPv4 network interfaces");
+    for (interface_index = 0; interface_index < interface_count && interface_index < 64;
+         ++interface_index) {
+        if (interfaces[interface_index].type == MN_INTERFACE_LOOPBACK &&
+            strcmp(interfaces[interface_index].address, "127.0.0.1") == 0) {
+            loopback_interface = interfaces[interface_index];
+            found_loopback = 1;
+            break;
+        }
+    }
+    CHECK(found_loopback, "enumerate the IPv4 loopback interface");
+    CHECK(mn_host_on(host, "Host", "Local Test", MN_MAX_PLAYERS,
+                     loopback_interface.address),
+          "host explicitly on the selected loopback interface");
 
     CHECK(!mn_discover(scanner),
           "disabled broadcast reports that an alternate discovery path is required");
@@ -64,8 +82,9 @@ int main(void) {
           strcmp(discovered_rooms[0].name, "Local Test") == 0,
           "unicast discovery finds room without LAN broadcast");
 
-    CHECK(mn_join(client, "127.0.0.1", config.port, "Client"),
-          "manual IPv4 join works as final discovery fallback");
+    CHECK(mn_join_from(client, loopback_interface.address, "127.0.0.1",
+                       config.port, "Client"),
+          "join while binding the client to a selected local interface");
 
     memset(&state, 0, sizeof(state));
     state.position.x = 12.5f;

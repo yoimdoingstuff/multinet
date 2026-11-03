@@ -23,11 +23,12 @@
 
 - [x] Add directed/unicast room discovery as a fallback when LAN broadcast is filtered.
 
-- [ ] Add IPv6 transport.
 - [ ] Add standards-based mDNS/DNS-SD discovery.
 - [ ] Add discovery tests across isolated local interfaces where CI permits.
 - [ ] Add a connection-quality / ping measurement API.
-- [ ] Investigate documented Wi-Fi Direct or Bluetooth PAN support as optional transports; keep UDP/Wi-Fi LAN as the default.
+- [x] Enumerate OS IPv4 adapters and support explicit binding for Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP interfaces.
+- [ ] Add native Bluetooth RFCOMM support as an optional transport backend.
+- [ ] Add IPv6 transport.
 
 ## Integration and packaging
 

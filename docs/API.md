@@ -4,7 +4,7 @@ The public interface is a C API in `include/multinet.h`. Include that header and
 
 ## Instance setup
 
-Call `mn_config_init()` to populate defaults, optionally change the UDP port, application ID, player cap or timing values, then call `mn_create()`. Destroy the instance with `mn_destroy()`.
+Call `mn_config_init()` to populate defaults, optionally change the UDP port, application ID, player cap or timing values, then call `mn_create()`. Destroy the instance with `mn_destroy()`. `mn_get_interfaces()` enumerates OS-managed IPv4 adapters, including loopback, Ethernet, Wi-Fi, Wi-Fi Direct and adapters identified as Bluetooth PAN.
 
 The default app ID is `MN_DEFAULT_APP_ID`. Two games using different IDs will not see each other's discovery offers or accept each other's packets, even when using the same UDP port. Give each application a stable, unique ID for release builds.
 
@@ -12,7 +12,10 @@ The default app ID is `MN_DEFAULT_APP_ID`. Two games using different IDs will no
 
 ## Hosting and joining
 
-- `mn_host(instance, player_name, room_name, max_players)` starts a room. The host is player ID 1. `max_players` includes the host and is clamped to 2–16.
+- `mn_host(instance, player_name, room_name, max_players)` starts a room on all local IPv4 interfaces. The host is player ID 1. `max_players` includes the host and is clamped to 2–16.
+- `mn_host_on(..., local_ipv4)` binds the host to one selected local adapter address.
+- `mn_discover_on(instance, interface)` sends discovery using that adapter's directed IPv4 broadcast address.
+- `mn_join_from(instance, local_ipv4, host, port, player_name)` binds the client to a chosen local adapter before connecting. This can select an Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN IP link.
 - `mn_discover()` starts a short LAN broadcast scan. Call `mn_update()` while it runs, then query `mn_get_rooms()`.
 - `mn_discover_at(instance, address, port)` sends a unicast discovery probe to one known host and retries it during the discovery window. Use it when broadcast is disabled, blocked by a router, or suppressed by the local network.
 - `mn_join(instance, host, port, player_name)` joins by IPv4 address or hostname. A port of zero uses the configured port.

@@ -8,6 +8,7 @@ It targets lightweight desktop games and tools. It has no engine or third-party 
 
 - Independent `mn_instance` objects. One process can host a room and connect multiple local test clients.
 - UDP host/client rooms, configurable port and application ID.
+- OS interface enumeration and explicit interface binding for Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP links.
 - IPv4 LAN broadcast discovery, retrying directed/unicast discovery when broadcasts are filtered, and manual IPv4/hostname joining as a final fallback.
 - Up to **16 players per room**, including the host.
 - Periodic player snapshots: position, rotation, velocity, score, flags, colour and four application-defined appearance IDs.
@@ -94,7 +95,7 @@ See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/C
 
 ## Scope and limitations
 
-MultiNet currently supports ordinary IPv4 LAN play. It does not provide IPv6, NAT traversal, public matchmaking, encryption, mDNS/DNS-SD, Bluetooth/Wi-Fi Direct, multi-hop relaying or covert tunnelling. State snapshots and custom messages are best-effort UDP datagrams, not reliable delivery. The host relays client-reported state; it is not an authoritative simulation or anti-cheat system. Treat all remote state as untrusted and validate it in the game.
+MultiNet currently supports ordinary IPv4 UDP over operating-system-provided interfaces. It can use Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN when those systems expose an IPv4 adapter. It does not implement raw Bluetooth RFCOMM/BLE or create/pair Wi-Fi Direct groups itself. IPv6, NAT traversal, public matchmaking, encryption, mDNS/DNS-SD, multi-hop relaying and covert tunnelling are not included. State snapshots and custom messages are best-effort UDP datagrams, not reliable delivery. The host relays client-reported state; it is not an authoritative simulation or anti-cheat system. Treat all remote state as untrusted and validate it in the game.
 
 ## License
 

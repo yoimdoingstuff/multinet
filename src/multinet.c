@@ -4,6 +4,7 @@
 
 #include <math.h>
 #include <float.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #include <bcrypt.h>
 typedef SOCKET mn_socket;
 typedef int mn_socklen;
@@ -23,6 +25,8 @@ typedef int mn_socklen;
 #define mn_close_socket closesocket
 #else
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -87,6 +91,7 @@ struct mn_instance {
     mn_peer peers[MN_MAX_PLAYERS];
     struct sockaddr_in server;
     struct sockaddr_in discovery_target;
+    char bound_ipv4[48];
     int discovery_target_valid;
     uint64_t session_token;
     uint32_t next_player_id;
@@ -225,7 +230,8 @@ static int mn_set_nonblocking(mn_socket socket_handle) {
 #endif
 }
 
-static mn_socket mn_open_socket(mn_instance *instance, uint16_t port) {
+static mn_socket mn_open_socket_on(mn_instance *instance, uint16_t port,
+                                      const char *local_ipv4) {
     mn_socket socket_handle;
     struct sockaddr_in address;
     mn_socklen address_length;
@@ -243,16 +249,22 @@ static mn_socket mn_open_socket(mn_instance *instance, uint16_t port) {
 #endif
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
     address.sin_port = htons(port);
+    if (local_ipv4 && local_ipv4[0]) {
+        if (inet_pton(AF_INET, local_ipv4, &address.sin_addr) != 1) {
+            mn_set_error(instance, "The selected local interface is not a valid IPv4 address");
+            mn_close_socket(socket_handle);
+            return MN_BAD_SOCKET;
+        }
+    } else {
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
+    }
     if (bind(socket_handle, (struct sockaddr *)&address,
              (mn_socklen)sizeof(address)) != 0) {
-        mn_set_error(instance, "Could not bind the requested UDP port");
+        mn_set_error(instance, "Could not bind the UDP socket to the selected interface/port");
         mn_close_socket(socket_handle);
         return MN_BAD_SOCKET;
     }
-
-
     if (!mn_set_nonblocking(socket_handle)) {
         mn_set_error(instance, "Could not make the UDP socket non-blocking");
         mn_close_socket(socket_handle);
@@ -267,13 +279,193 @@ static mn_socket mn_open_socket(mn_instance *instance, uint16_t port) {
     address_length = (mn_socklen)sizeof(address);
     if (getsockname(socket_handle, (struct sockaddr *)&address, &address_length) == 0)
         instance->local_port = ntohs(address.sin_port);
+    mn_copy_text(instance->bound_ipv4, sizeof(instance->bound_ipv4),
+                 local_ipv4 && local_ipv4[0] ? local_ipv4 : "");
     return socket_handle;
+}
+
+static mn_socket mn_open_socket(mn_instance *instance, uint16_t port) {
+    return mn_open_socket_on(instance, port, NULL);
 }
 
 static void mn_close_current_socket(mn_instance *instance) {
     if (instance->socket != MN_BAD_SOCKET) mn_close_socket(instance->socket);
     instance->socket = MN_BAD_SOCKET;
     instance->local_port = 0;
+    instance->bound_ipv4[0] = '\0';
+}
+
+
+static int mn_text_contains_ci(const char *text, const char *needle) {
+    size_t i, j;
+    if (!text || !needle || !needle[0]) return 0;
+    for (i = 0; text[i]; ++i) {
+        for (j = 0; needle[j] && text[i + j] &&
+             tolower((unsigned char)text[i + j]) == tolower((unsigned char)needle[j]); ++j) { }
+        if (!needle[j]) return 1;
+    }
+    return 0;
+}
+
+static void mn_store_interface(mn_interface *out, size_t capacity, size_t *count,
+                               const mn_interface *value) {
+    if (!count || !value) return;
+    if (out && *count < capacity) out[*count] = *value;
+    ++(*count);
+}
+
+size_t mn_get_interfaces(mn_interface *interfaces, size_t capacity) {
+    size_t count = 0;
+#ifdef _WIN32
+    ULONG buffer_size = 15000;
+    ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    IP_ADAPTER_ADDRESSES *adapters = (IP_ADAPTER_ADDRESSES *)malloc(buffer_size);
+    ULONG status;
+    if (!adapters) return 0;
+    status = GetAdaptersAddresses(AF_INET, flags, NULL, adapters, &buffer_size);
+    if (status == ERROR_BUFFER_OVERFLOW) {
+        IP_ADAPTER_ADDRESSES *grown = (IP_ADAPTER_ADDRESSES *)realloc(adapters, buffer_size);
+        if (!grown) { free(adapters); return 0; }
+        adapters = grown;
+        status = GetAdaptersAddresses(AF_INET, flags, NULL, adapters, &buffer_size);
+    }
+    if (status != NO_ERROR) { free(adapters); return 0; }
+    {
+        IP_ADAPTER_ADDRESSES *adapter;
+        for (adapter = adapters; adapter; adapter = adapter->Next) {
+            IP_ADAPTER_UNICAST_ADDRESS *unicast;
+            if (adapter->OperStatus != IfOperStatusUp) continue;
+            for (unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next) {
+                struct sockaddr_in *address;
+                mn_interface item;
+                uint32_t ip_host, mask_host, broadcast_host;
+                unsigned prefix;
+                char display_name[160];
+                if (!unicast->Address.lpSockaddr ||
+                    unicast->Address.lpSockaddr->sa_family != AF_INET) continue;
+                address = (struct sockaddr_in *)unicast->Address.lpSockaddr;
+                memset(&item, 0, sizeof(item));
+                if (!inet_ntop(AF_INET, &address->sin_addr, item.address,
+                               sizeof(item.address))) continue;
+                prefix = unicast->OnLinkPrefixLength > 32 ? 32u : unicast->OnLinkPrefixLength;
+                mask_host = prefix == 0 ? 0u : (0xFFFFFFFFu << (32u - prefix));
+                ip_host = ntohl(address->sin_addr.s_addr);
+                broadcast_host = (ip_host & mask_host) | (~mask_host);
+                {
+                    struct in_addr mask_addr, broadcast_addr;
+                    mask_addr.s_addr = htonl(mask_host);
+                    broadcast_addr.s_addr = htonl(broadcast_host);
+                    (void)inet_ntop(AF_INET, &mask_addr, item.netmask, sizeof(item.netmask));
+                    (void)inet_ntop(AF_INET, &broadcast_addr, item.broadcast, sizeof(item.broadcast));
+                }
+                display_name[0] = '\0';
+                if (adapter->FriendlyName)
+                    WideCharToMultiByte(CP_UTF8, 0, adapter->FriendlyName, -1,
+                                        display_name, (int)sizeof(display_name), NULL, NULL);
+                else
+                    display_name[0] = '\0';
+                mn_copy_text(item.name, sizeof(item.name),
+                             adapter->AdapterName ? adapter->AdapterName : "adapter");
+                mn_copy_text(item.description, sizeof(item.description),
+                             display_name[0] ? display_name :
+                             (adapter->Description ? "Network adapter" : item.name));
+                item.index = adapter->IfIndex;
+                if (mn_text_contains_ci(item.description, "wi-fi direct") ||
+                    mn_text_contains_ci(item.description, "wifi direct") ||
+                    mn_text_contains_ci(item.description, "wireless direct"))
+                    item.type = MN_INTERFACE_WIFI_DIRECT;
+                else if (mn_text_contains_ci(item.description, "bluetooth") ||
+                         mn_text_contains_ci(item.name, "bth"))
+                    item.type = MN_INTERFACE_BLUETOOTH_PAN;
+                else if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
+                    item.type = MN_INTERFACE_LOOPBACK;
+                else if (adapter->IfType == IF_TYPE_IEEE80211)
+                    item.type = MN_INTERFACE_WIFI;
+                else if (adapter->IfType == IF_TYPE_ETHERNET_CSMACD)
+                    item.type = MN_INTERFACE_ETHERNET;
+                else
+                    item.type = MN_INTERFACE_OTHER;
+                mn_store_interface(interfaces, capacity, &count, &item);
+            }
+        }
+    }
+    free(adapters);
+#else
+    {
+        struct ifaddrs *all = NULL, *entry;
+        if (getifaddrs(&all) != 0) return 0;
+        for (entry = all; entry; entry = entry->ifa_next) {
+            mn_interface item;
+            struct sockaddr_in *address;
+            uint32_t ip_host, mask_host, broadcast_host;
+            if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET ||
+                !(entry->ifa_flags & IFF_UP)) continue;
+            address = (struct sockaddr_in *)entry->ifa_addr;
+            memset(&item, 0, sizeof(item));
+            if (!inet_ntop(AF_INET, &address->sin_addr, item.address,
+                           sizeof(item.address))) continue;
+            mn_copy_text(item.name, sizeof(item.name), entry->ifa_name);
+            mn_copy_text(item.description, sizeof(item.description), entry->ifa_name);
+            item.index = if_nametoindex(entry->ifa_name);
+            if (entry->ifa_netmask) {
+                struct in_addr *mask = &((struct sockaddr_in *)entry->ifa_netmask)->sin_addr;
+                (void)inet_ntop(AF_INET, mask, item.netmask, sizeof(item.netmask));
+                ip_host = ntohl(address->sin_addr.s_addr);
+                mask_host = ntohl(mask->s_addr);
+                broadcast_host = (ip_host & mask_host) | (~mask_host);
+                {
+                    struct in_addr broadcast_addr;
+                    broadcast_addr.s_addr = htonl(broadcast_host);
+                    (void)inet_ntop(AF_INET, &broadcast_addr, item.broadcast, sizeof(item.broadcast));
+                }
+            }
+            if (entry->ifa_flags & IFF_LOOPBACK)
+                item.type = MN_INTERFACE_LOOPBACK;
+            else if (mn_text_contains_ci(entry->ifa_name, "bnep") ||
+                     mn_text_contains_ci(entry->ifa_name, "bluetooth") ||
+                     mn_text_contains_ci(entry->ifa_name, "bt-pan"))
+                item.type = MN_INTERFACE_BLUETOOTH_PAN;
+            else if (mn_text_contains_ci(entry->ifa_name, "p2p") ||
+                     mn_text_contains_ci(entry->ifa_name, "wfd"))
+                item.type = MN_INTERFACE_WIFI_DIRECT;
+            else {
+                char wireless_path[256];
+                (void)snprintf(wireless_path, sizeof(wireless_path),
+                               "/sys/class/net/%s/wireless", entry->ifa_name);
+                if (access(wireless_path, F_OK) == 0 ||
+                    strncmp(entry->ifa_name, "wl", 2) == 0 ||
+                    strncmp(entry->ifa_name, "wlan", 4) == 0)
+                    item.type = MN_INTERFACE_WIFI;
+                else if (strncmp(entry->ifa_name, "eth", 3) == 0 ||
+                         strncmp(entry->ifa_name, "en", 2) == 0)
+                    item.type = MN_INTERFACE_ETHERNET;
+                else
+                    item.type = MN_INTERFACE_OTHER;
+            }
+            mn_store_interface(interfaces, capacity, &count, &item);
+        }
+        freeifaddrs(all);
+    }
+#endif
+    return count;
+}
+
+static int mn_rebind_socket(mn_instance *instance, const char *local_ipv4) {
+    char previous[48];
+    mn_socket replacement;
+    const char *requested = local_ipv4 && local_ipv4[0] ? local_ipv4 : "";
+    if (strcmp(instance->bound_ipv4, requested) == 0) return 1;
+    mn_copy_text(previous, sizeof(previous), instance->bound_ipv4);
+    mn_close_current_socket(instance);
+    replacement = mn_open_socket_on(instance, 0, requested);
+    if (replacement == MN_BAD_SOCKET) {
+        instance->socket = mn_open_socket_on(instance, 0, previous[0] ? previous : NULL);
+        instance->info.local_port = instance->local_port;
+        return 0;
+    }
+    instance->socket = replacement;
+    instance->info.local_port = instance->local_port;
+    return 1;
 }
 
 static int mn_same_address(const struct sockaddr_in *left,
@@ -946,8 +1138,9 @@ void mn_destroy(mn_instance *instance) {
     free(instance);
 }
 
-int mn_host(mn_instance *instance, const char *player_name,
-            const char *room_name, uint8_t max_players) {
+static int mn_host_internal(mn_instance *instance, const char *player_name,
+                            const char *room_name, uint8_t max_players,
+                            const char *local_ipv4) {
     mn_socket new_socket;
     uint32_t room_id;
     if (!instance || !instance->ready) return 0;
@@ -955,7 +1148,7 @@ int mn_host(mn_instance *instance, const char *player_name,
     if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
     max_players = max_players < 2 ? 2 : (max_players > MN_MAX_PLAYERS ? MN_MAX_PLAYERS : max_players);
     mn_close_current_socket(instance);
-    new_socket = mn_open_socket(instance, instance->config.port);
+    new_socket = mn_open_socket_on(instance, instance->config.port, local_ipv4);
     if (new_socket == MN_BAD_SOCKET) {
         instance->socket = mn_open_socket(instance, 0);
         instance->info.local_port = instance->local_port;
@@ -995,6 +1188,22 @@ int mn_host(mn_instance *instance, const char *player_name,
     instance->snapshot_tick = 0.0f;
     mn_refresh_host_players(instance);
     return 1;
+}
+
+
+int mn_host(mn_instance *instance, const char *player_name,
+            const char *room_name, uint8_t max_players) {
+    return mn_host_internal(instance, player_name, room_name, max_players, NULL);
+}
+
+int mn_host_on(mn_instance *instance, const char *player_name,
+               const char *room_name, uint8_t max_players,
+               const char *local_ipv4) {
+    if (!local_ipv4 || !local_ipv4[0]) {
+        if (instance) mn_set_error(instance, "The selected host interface address is empty");
+        return 0;
+    }
+    return mn_host_internal(instance, player_name, room_name, max_players, local_ipv4);
 }
 
 int mn_discover(mn_instance *instance) {
@@ -1065,6 +1274,43 @@ int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname,
 
 
 
+
+int mn_discover_on(mn_instance *instance, const mn_interface *network_interface) {
+    struct sockaddr_in destination;
+    if (!instance || !instance->ready || !network_interface) return 0;
+    if (!network_interface->address[0] || !network_interface->broadcast[0]) {
+        mn_set_error(instance, "The selected interface has no IPv4 broadcast address");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_HOST) {
+        mn_set_error(instance, "Leave the hosted room before searching");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    if (!mn_rebind_socket(instance, network_interface->address)) {
+        mn_set_error(instance, "Could not bind discovery to the selected interface");
+        return 0;
+    }
+    memset(&destination, 0, sizeof(destination));
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(instance->config.port);
+    if (inet_pton(AF_INET, network_interface->broadcast, &destination.sin_addr) != 1) {
+        mn_set_error(instance, "The selected interface broadcast address is invalid");
+        return 0;
+    }
+    instance->room_count = 0;
+    memset(instance->rooms, 0, sizeof(instance->rooms));
+    instance->discovery_left = instance->config.discovery_seconds;
+    instance->discovery_tick = 0.0f;
+    instance->info.role = MN_ROLE_NONE;
+    instance->info.status = MN_STATUS_SEARCHING;
+    instance->info.last_error[0] = '\0';
+    instance->discovery_target = destination;
+    instance->discovery_target_valid = 1;
+    mn_send_discover_to(instance, &instance->discovery_target);
+    return 1;
+}
+
 void mn_stop_discovery(mn_instance *instance) {
     if (!instance || instance->info.status != MN_STATUS_SEARCHING) return;
     instance->info.status = MN_STATUS_OFFLINE;
@@ -1081,8 +1327,8 @@ size_t mn_get_rooms(const mn_instance *instance, mn_room *rooms, size_t capacity
     return instance->room_count;
 }
 
-int mn_join(mn_instance *instance, const char *host, uint16_t port,
-            const char *player_name) {
+static int mn_join_internal(mn_instance *instance, const char *host, uint16_t port,
+                            const char *player_name, const char *local_ipv4) {
     struct addrinfo hints;
     struct addrinfo *result = NULL;
     struct sockaddr_in server;
@@ -1097,6 +1343,10 @@ int mn_join(mn_instance *instance, const char *host, uint16_t port,
         return 0;
     }
     if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    if (!mn_rebind_socket(instance, local_ipv4)) {
+        mn_set_error(instance, "Could not bind the client socket to the selected local interface");
+        return 0;
+    }
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
@@ -1137,6 +1387,21 @@ int mn_join(mn_instance *instance, const char *host, uint16_t port,
     memset(instance->players, 0, sizeof(instance->players));
     mn_send_join(instance);
     return 1;
+}
+
+
+int mn_join(mn_instance *instance, const char *host, uint16_t port,
+            const char *player_name) {
+    return mn_join_internal(instance, host, port, player_name, NULL);
+}
+
+int mn_join_from(mn_instance *instance, const char *local_ipv4,
+                 const char *host, uint16_t port, const char *player_name) {
+    if (!local_ipv4 || !local_ipv4[0]) {
+        if (instance) mn_set_error(instance, "The selected client interface address is empty");
+        return 0;
+    }
+    return mn_join_internal(instance, host, port, player_name, local_ipv4);
 }
 
 int mn_join_room(mn_instance *instance, const mn_room *room,
