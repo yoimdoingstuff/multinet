@@ -7,7 +7,7 @@ Every datagram begins with a 16-byte header:
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 4 | ASCII magic `MNET` |
-| 4 | 1 | Protocol version (`3`) |
+| 4 | 1 | Protocol version (`4`) |
 | 5 | 1 | Packet type |
 | 6 | 2 | Total datagram size, including header |
 | 8 | 4 | Application ID |
@@ -15,15 +15,25 @@ Every datagram begins with a 16-byte header:
 
 Integers are encoded in big-endian byte order. Float fields are 32-bit IEEE-754 values encoded using their bit representation in big-endian order. The maximum supported UDP datagram size is 1472 bytes. No compiler-specific structure packing or host-endian struct dumps are used.
 
-Packet types on the game socket are discovery, offer, join, welcome, player state, snapshot, leave, match start, best-effort application message, reliable application message, reliable acknowledgement, ping request and ping response. DNS-SD/mDNS discovery uses standard DNS messages on a separate optional UDP 5353 socket. Version and app ID are checked before a packet is handled. Payload lengths are checked against the exact expected size before fields are read. Version 2 added a 32-bit sequence number to client player-state packets and host snapshots; receivers ignore duplicated, stale or reordered state/snapshot packets. Version 3 adds reliable application messages and ping/latency packets.
+Packet types on the game socket include discovery, offer, join, welcome, player state, snapshot, leave, match start, best-effort and reliable application messages, acknowledgements, ping/pong, pairing denial, the secure envelope, pairing challenge and pairing proof. DNS-SD/mDNS discovery uses standard DNS messages on a separate optional UDP 5353 socket. Version and app ID are checked before a packet is handled. Payload lengths are checked against the exact expected size before fields are read. Version 2 added wrap-safe sequence numbers to state/snapshot packets; version 3 added reliable messages and ping/latency; version 4 adds optional authenticated encryption and device pairing.
 
 A player snapshot contains a count, match-started flag and up to 16 fixed-size player records. A player record contains ID, score, flags, packed RGBA colour, four appearance identifiers, a fixed-size name, position, quaternion rotation and velocity.
 
+## Authenticated packet envelope
+
+When a 32-byte room key is configured on an instance, all game-socket packets are wrapped in AES-256-GCM. The outer packet retains the normal 16-byte header with packet type `MN_PKT_SECURE`; its payload is a 12-byte nonce, a one-byte inner packet type, the encrypted inner payload and a 16-byte GCM tag. The authenticated additional data (AAD) is the complete outer header plus the inner packet type. The original inner header is reconstructed after successful decryption. An instance with encryption enabled rejects unauthenticated plaintext game packets.
+
+The nonce is an eight-byte random prefix generated for each instance plus a four-byte monotonically increasing counter. The sender stops sending secure packets rather than reusing a nonce after the counter is exhausted. Receivers maintain a 64-packet replay window for each source address/nonce prefix. Authentication is checked before replay state is updated. Windows uses BCrypt/CNG; Unix-like builds use OpenSSL EVP. If built with `MULTINET_ENABLE_ENCRYPTION=OFF`, crypto APIs report unavailable.
+
+mDNS/DNS-SD remains ordinary clear-text DNS on its separate UDP 5353 socket. It advertises room metadata and is not authenticated or confidential. Applications should treat it as discovery convenience only; the actual game-socket join still requires the room key.
+
 ## Session model
 
-The host owns room membership and assigns player IDs. New admissions can optionally be restricted by an IPv4 source-address allow-list maintained by the host application. This filter is disabled by default and does not disconnect existing members. It is intentionally not described as cryptographic pairing: IP addresses can change and may be spoofed. A joining client receives a per-session 64-bit random token. Client state, leave and application-message packets must include that token and originate from the address bound to the session. Tokens are generated using the operating system random source (`BCryptGenRandom` on Windows and `/dev/urandom` on POSIX).
+The host owns room membership and assigns player IDs. The optional IPv4 source allow-list is an additional coarse filter and does not replace identity checks. Each instance has a random 128-bit device ID and 256-bit private device secret. Applications can persist and restore both; the host stores a matching ID/secret pair for each paired device. When pairing-required mode is enabled, unknown IDs generate an approval event. After approval, the host sends a fresh 32-byte challenge. The client responds with HMAC-SHA256 over `challenge_nonce || device_id || room_id_be || app_id_be`. A valid proof is required before the host assigns a player ID and sends WELCOME. Paired devices repeat this challenge-response on later joins.
 
-The token is a basic session credential, not encryption. Traffic is not confidential, packets are not cryptographically signed, and the host is not a complete anti-cheat authority. A hostile local-network peer may still spoof, replay or flood traffic in ways that require stronger protocol protections before this is used outside trusted LAN play.
+The client sends its private device secret inside the encrypted JOIN packet so the host can store it after the user approves the first pairing. Because the room key is shared, another room member with that key can decrypt and observe that initial secret if it captures the packet. This design authenticates paired devices against outsiders without the room key; it does not defend against malicious holders of the shared key. Use secure local storage for persisted secrets and use a separately provisioned per-device public-key protocol where that stronger threat model matters.
+
+Each admitted client also receives a per-session 64-bit random token. Client state, leave and application-message packets must include that token and originate from the address bound to the session. Tokens are generated using the operating system random source (`BCryptGenRandom` on Windows and `/dev/urandom` on POSIX).
 
 ## Delivery and authority
 
@@ -41,7 +51,8 @@ Discovery supports IPv4 global/subnet broadcast, explicit-interface directed bro
 - [x] Per-peer packet/message rate limits and configurable absolute state bounds.
 - [x] Host-side application callback for game-specific remote-state validation.
 - [ ] Host-side authoritative input/shot validation and match-result verification.
-- Optional encrypted and authenticated transport for untrusted networks.
+- [x] Optional AES-256-GCM authenticated packet transport with replay checks (shared pre-shared room-key model).
+- [x] Device ID/secret pairing with host approval and HMAC-SHA256 challenge-response.
 - IPv6 and standards-based service discovery.
 - [x] Add a Clang/libFuzzer harness for packet framing, room offers and player-state payload decoding.
 - Explicit player identity/pairing and encrypted peer authentication for untrusted networks.

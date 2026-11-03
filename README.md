@@ -2,7 +2,7 @@
 
 **MultiNet** is a reusable C11 multiplayer networking library extracted from the LAN transport built for [Golfgame](https://github.com/yoimdoingstuff/golfgame). It separates generic networking from Golfgame's lobby UI, course loading, physics and ball rendering, then refactors it into a portable instance-based API with a standalone test app.
 
-It targets lightweight desktop games and tools. It has no engine or third-party runtime dependency.
+It targets lightweight desktop games and tools and has no game-engine dependency. Optional AES-256-GCM encryption uses native Windows CNG or OpenSSL Crypto on Unix-like systems.
 
 ## Features
 
@@ -14,14 +14,14 @@ It targets lightweight desktop games and tools. It has no engine or third-party 
 - Periodic player snapshots: position, rotation, velocity, score, flags, colour and four application-defined appearance IDs.
 - Host-controlled match start, and queued connection, room, player, match, message and error events.
 - Application-defined message channels with both best-effort and reliable acknowledged delivery, per-delivery IDs/events, broadcast and host-to-player messaging.
-- Non-blocking sockets, timeouts, per-session random join tokens, optional host-side IPv4 admission allow-list, fixed-endian packet serialization, stale-packet sequence checks, ping/latency measurement and basic host-side state/message cooldowns.
+- Non-blocking sockets, timeouts, per-session random join tokens, an optional IPv4 admission filter, persistent device IDs/private secrets, host-approved HMAC challenge-response pairing, AES-256-GCM authenticated packet encryption, fixed-endian serialization, replay checks, ping/latency measurement and host-side rate limits.
 - Windows Winsock and POSIX socket backends; CMake build, installable static library, integration tests and interactive demo.
 
 The library transports game state but does not simulate it. Golfgame remains responsible for physics, ball interpolation, scoring and UI.
 
 ## Build
 
-Requirements: CMake 3.16+ and a C11 compiler. Visual Studio 2022, GCC and Clang are suitable.
+Requirements: CMake 3.16+ and a C11 compiler. Visual Studio 2022, GCC and Clang are suitable. Encryption is enabled by default: Windows uses built-in CNG, while Linux/macOS require the OpenSSL Crypto development package. Set `-DMULTINET_ENABLE_ENCRYPTION=OFF` to build without encryption; pairing and room-key APIs are then unavailable.
 
 **Linux/macOS**
 
@@ -39,7 +39,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The build produces `multinet` (static library), `multinet_demo` (interactive demo), `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example) and `multinet_tests` (loopback integration test). Push a version tag such as `v0.4.0` to trigger the release workflow, which verifies version consistency, packages Windows/Linux builds and publishes a GitHub Release with SHA-256 sidecars. Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
+The build produces `multinet` (static library), `multinet_demo` (interactive demo), `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example) and `multinet_tests` (loopback integration test). Push a version tag such as `v0.5.0` to trigger the release workflow, which verifies version consistency, packages Windows/Linux builds and publishes a GitHub Release with SHA-256 sidecars. Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
 
 An optional Clang/libFuzzer target exercises malformed packet framing, room-offer parsing and player-state decoding. It is separate from the normal cross-platform build:
 
@@ -91,6 +91,16 @@ Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, 
 
 The loopback integration test exercises independent instances, player replication, host-side position/velocity bounds and application validation callbacks, best-effort and acknowledged messages in both directions, delivery IDs and per-player ACKs for a 15-recipient broadcast, pending-delivery failure on departure, ping, match start, the full 16-player limit and player departure. This is not a substitute for testing two physical Windows PCs over a real LAN.
 
+## Secure rooms
+
+Encryption must be configured before hosting, joining or discovering rooms over the game UDP socket. Generate a random 32-byte key once with `mn_generate_room_key()`, distribute it to authorized participants using a trusted out-of-band method, then call `mn_set_room_key()` on every instance while it is offline. Never commit the key to source control or print it to logs.
+
+On the host, call `mn_set_pairing_required(host, 1)` after setting the room key. Poll for `MN_EVENT_PAIRING_REQUEST` and show the device ID to the host application's user for approval. Call `mn_approve_pairing(host, event.device_id, 1)` to approve or pass zero to reject. Approval is completed only after the client proves possession of its private device secret with HMAC-SHA256. Persist each approved ID and secret using `mn_get_paired_device_secret()`; persist clients' own identity pair using `mn_get_device_id()`, `mn_get_device_secret()` and `mn_set_device_identity()`.
+
+The room key is shared by every participant, so an authorized key holder can decrypt all room packets. The first-time device secret is carried inside the encrypted JOIN packet; another participant who can capture room traffic and knows the room key could observe that initial secret. This is suitable for private friend/LAN rooms where members are trusted, not a hostile-member or public-internet security boundary. mDNS remains a clear-text discovery protocol and may expose room names, host names and player counts.
+
+See [the API guide](docs/API.md) and [the protocol security notes](docs/PROTOCOL.md) for setup details and limitations.
+
 ## Quick API example
 
 ```c
@@ -121,11 +131,11 @@ int main(void) {
 }
 ```
 
-Version 0.4 adds configurable host-side remote-state bounds and an application validation callback. Version 0.3 added delivery-ID reporting and acknowledgement/failure events for reliable messages, including pending-delivery failures when a recipient leaves. See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
+Version 0.5 adds AES-256-GCM authenticated UDP packets, persistent device identities, host-approved HMAC challenge-response pairing and paired-device credential storage. Version 0.4 added configurable host-side remote-state bounds and an application validation callback. Version 0.3 added delivery-ID reporting and acknowledgement/failure events for reliable messages, including pending-delivery failures when a recipient leaves. See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
 
 ## Scope and limitations
 
-MultiNet currently supports ordinary IPv4 UDP over operating-system-provided interfaces. It can use Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN when those systems expose an IPv4 adapter. Discovery includes IPv4 broadcast, directed/unicast probing and DNS-SD/mDNS. It does not implement raw Bluetooth RFCOMM/BLE or create/pair Wi-Fi Direct groups itself. IPv6, NAT traversal, public matchmaking, encryption, multi-hop relaying and covert tunnelling are not included. Player-state snapshots and `mn_send_message()` custom messages are best-effort UDP datagrams. `mn_send_reliable_message()` adds bounded acknowledgement/retry and duplicate suppression for application events, but it is not durable storage across disconnects. The host relays client-reported state; it is not an authoritative simulation or anti-cheat system. Treat all remote state as untrusted and validate it in the game.
+MultiNet currently supports ordinary IPv4 UDP over operating-system-provided interfaces. It can use Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN when those systems expose an IPv4 adapter. Discovery includes IPv4 broadcast, directed/unicast probing and DNS-SD/mDNS. It does not implement raw Bluetooth RFCOMM/BLE or create/pair Wi-Fi Direct groups itself. IPv6, NAT traversal, public matchmaking, multi-hop relaying and covert tunnelling are not included. Optional AES-256-GCM encryption uses a shared 32-byte pre-shared room key that the application must distribute out of band. Every member with that key can decrypt room traffic; this protects against outsiders without the key, not malicious room members. mDNS discovery still exposes room metadata, and the protocol does not yet provide forward secrecy or automated key exchange. Player-state snapshots and `mn_send_message()` custom messages are best-effort UDP datagrams. `mn_send_reliable_message()` adds bounded acknowledgement/retry and duplicate suppression for application events, but it is not durable storage across disconnects. The host relays client-reported state; it is not an authoritative simulation or anti-cheat system. Treat all remote state as untrusted and validate it in the game.
 
 ## License
 

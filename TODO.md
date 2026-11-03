@@ -20,8 +20,8 @@
 - [x] Re-ACK duplicate reliable packets during cooldown and only remember accepted messages after queue capacity is reserved.
 - [x] Validate peer-controlled state against configurable position/velocity bounds and application callbacks.
 - [x] Add a host-controlled IPv4 source allow-list for new nearby-device admissions.
-- [ ] Add cryptographic device identity and challenge-response pairing; an IP allow-list is not authentication.
-- [ ] Add optional encrypted and authenticated transport for untrusted networks.
+- [x] Add persistent cryptographic device identity and host-approved HMAC-SHA256 challenge-response pairing.
+- [x] Add optional AES-256-GCM authenticated packet transport using a shared pre-shared room key; document its group-key limitations.
 
 ## Transport and discovery
 

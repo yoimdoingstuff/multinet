@@ -8,9 +8,40 @@ Call `mn_config_init()` to populate defaults, optionally change the UDP port, ap
 
 The default app ID is `MN_DEFAULT_APP_ID`. Two games using different IDs will not see each other's discovery offers or accept each other's packets, even when using the same UDP port. Give each application a stable, unique ID for release builds.
 
-The source-address allow-list is only a coarse local-network admission filter. IPv4 addresses can change under DHCP and may be spoofed on some networks. It is not secure device pairing, user authentication or a replacement for an authenticated cryptographic handshake. Keep it disabled for open LAN rooms, or populate it with addresses managed by the surrounding game/app.
+The source-address allow-list is only a coarse local-network admission filter. IPv4 addresses can change under DHCP and may be spoofed on some networks. It is not device identity or cryptographic pairing. Use it as an optional first admission gate, independently of the device pairing feature below.
 
 `mn_create()` opens an ephemeral local UDP socket. Hosting switches that socket to the configured listening port; joining keeps the ephemeral source port and targets the supplied server port. A second independent `mn_instance` may be created in the same process and used as a separate test client.
+
+## Authenticated encryption and device pairing
+
+### Configure a room key
+
+Encryption is optional at build time and enabled by default. Windows uses the built-in BCrypt/CNG provider; Unix-like builds use OpenSSL Crypto. Call `mn_crypto_available()` to check availability. Generate a random 32-byte key on one trusted instance with `mn_generate_room_key(key)`, then securely distribute the same key to every authorized host/client. This is a pre-shared key, not a key exchange.
+
+Call `mn_set_room_key(instance, key)` while the instance is offline and before discovery, hosting or joining. All game UDP packets are then wrapped in AES-256-GCM authenticated encryption, and plaintext game packets are rejected. Clear it with `mn_clear_room_key()` while offline; this also disables pairing-required mode and clears the stored paired-device credentials. When encryption is disabled in CMake, `mn_crypto_available()` returns zero and room-key/pairing setup fails cleanly.
+
+The mDNS/DNS-SD discovery socket remains separate and uses clear-text DNS messages. Room names, host names and player counts advertised through mDNS are therefore not confidential. The actual game-socket join and subsequent gameplay traffic still require the configured room key.
+
+### Persistent device identity
+
+Every instance starts with a random 128-bit device ID and a random 256-bit private device secret. Persist both in the application's secure settings store:
+- `mn_get_device_id()` copies the public device ID.
+- `mn_get_device_secret()` copies the private secret. Treat it like a password and protect it at rest.
+- `mn_set_device_identity(instance, id, secret)` restores the pair on a newly created, offline instance.
+
+Do not persist only the ID. The host verifies possession of the matching secret during pairing; a copied public ID without the secret is rejected.
+
+### Host approval and paired-device trust
+
+Pairing requires a configured room key. On the host, call `mn_set_pairing_required(host, 1)` before admitting clients. An unknown device receives an `MN_EVENT_PAIRING_REQUEST`; the event's `device_id` identifies the device. Show this request to the user, then call `mn_approve_pairing(host, event.device_id, 1)` to approve or pass zero to reject.
+
+Approval does not immediately admit the device. The host stores its ID/secret, sends a fresh random challenge, and waits for the client to return an HMAC-SHA256 proof bound to the challenge, device ID, room ID and application ID. Only a valid proof receives a player ID and welcome packet. `MN_EVENT_PAIRING_APPROVED` is emitted after proof verification; rejection is reported with `MN_EVENT_PAIRING_REJECTED`.
+
+The host can persist its trust store with `mn_get_paired_device_secret(host, id, secret)` and restore entries with `mn_pair_device(host, id, secret)` on a later instance. Use `mn_unpair_device()` to revoke a credential for future admissions or `mn_clear_paired_devices()` to remove all stored credentials. Unpairing does not forcibly disconnect a peer that is already in the room; that session remains active until it leaves or times out. Paired devices are challenged again on subsequent joins even when `pairing_required` is later turned off. Unknown devices can join without approval only when pairing-required mode is disabled.
+
+### Security boundary
+
+AES-GCM uses a 64-bit random per-instance nonce prefix plus a monotonically increasing 32-bit counter, with a replay window on receive. The room key is shared by all members: every member holding it can decrypt room traffic. The client's private device secret is first delivered to the host inside the group-key-encrypted JOIN packet, so another authorized room member capable of capturing traffic can observe that initial secret. HMAC challenge-response prevents a network outsider who lacks the room key from claiming a paired ID, but does not protect against a malicious participant who already has the shared room key. There is no automated key exchange, forward secrecy or secure public-internet matchmaking. Use an independently provisioned per-device public-key scheme for hostile-member threat models.
 
 ## Hosting and joining
 
