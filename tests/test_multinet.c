@@ -73,6 +73,7 @@ int main(void) {
     int client_ping_received = 0, host_ping_received = 0;
     unsigned iteration;
     size_t extra_count = 0, j;
+    unsigned validator_calls_before_invalid_bounds = 0u;
 
     mn_config_init(&config);
     config.port = 38927;
@@ -201,6 +202,7 @@ int main(void) {
     CHECK(received.position.x == 12.5f && received.position.y == -3.25f &&
           received.score == 7 && received.appearance[0] == 12,
           "player snapshot fields survive wire serialisation");
+    validator_calls_before_invalid_bounds = validator_context.calls;
 
     state.position.x = 101.0f;
     CHECK(mn_set_local_player(client, &state),
@@ -227,7 +229,7 @@ int main(void) {
           received.position.x == 12.5f && received.velocity.x == 1.0f &&
           received.score == 7,
           "host rejects remote velocity beyond the configured absolute limit");
-    CHECK(validator_context.calls == 0u,
+    CHECK(validator_context.calls == validator_calls_before_invalid_bounds,
           "application callback is not invoked for states rejected by built-in bounds");
 
     state.position.x = 13.0f;
