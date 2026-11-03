@@ -11,7 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify release version metadata
-        run: cmake -DSOURCE_DIR="${GITHUB_WORKSPACE}" -DRELEASE_TAG=v0.4.0 -P scripts/check-release-version.cmake
+        run: |
+          cmake -DSOURCE_DIR="${GITHUB_WORKSPACE}" -DRELEASE_TAG=v0.4.0 -P scripts/check-release-version.cmake
+          cmake -DSOURCE_DIR="${GITHUB_WORKSPACE}" -DRELEASE_TAG=v0.4.0-rc.1 -P scripts/check-release-version.cmake
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build library, demo and tests
