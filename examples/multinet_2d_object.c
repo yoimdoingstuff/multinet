@@ -37,7 +37,7 @@ int main(int argc, char **argv) {
     if (argc < 3 || argc > 4) {
         fprintf(stderr,
             "Usage:\n"
-            "  %s host <name> [seconds]\n"
+            "  %s host <name>\n"
             "  %s join <host-ip> <name>\n",
             argv[0], argv[0]);
         return 2;
@@ -48,9 +48,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (is_host) {
+        if (argc != 3) return 2;
         name = argv[2];
     } else {
-        if (argc < 4) return 2;
+        if (argc != 4) return 2;
         name = argv[3];
     }
 
