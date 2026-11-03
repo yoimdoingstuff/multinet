@@ -159,6 +159,8 @@ int mn_host_on(mn_instance *instance, const char *player_name,
                const char *room_name, uint8_t max_players,
                const char *local_ipv4);
 int mn_discover(mn_instance *instance);
+/* Try IPv4 global/subnet broadcasts and DNS-SD/mDNS together. */
+int mn_discover_auto(mn_instance *instance);
 /* DNS-SD/mDNS service discovery on the local link. */
 int mn_discover_mdns(mn_instance *instance);
 /* Unicast discovery fallback for networks where broadcast is filtered. */

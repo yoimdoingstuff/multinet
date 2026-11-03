@@ -16,7 +16,7 @@ The default app ID is `MN_DEFAULT_APP_ID`. Two games using different IDs will no
 - `mn_host_on(..., local_ipv4)` binds the host to one selected local adapter address.
 - `mn_discover_on(instance, interface)` sends discovery using that adapter's directed IPv4 broadcast address.
 - `mn_join_from(instance, local_ipv4, host, port, player_name)` binds the client to a chosen local adapter before connecting. This can select an Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN IP link.
-- `mn_discover()` starts a short LAN broadcast scan. Call `mn_update()` while it runs, then query `mn_get_rooms()`.
+- `mn_discover()` starts a broadcast-only scan. `mn_discover_auto()` is the recommended default: it sends global broadcast, directed subnet-broadcast probes on each usable OS IPv4 interface, and mDNS/DNS-SD concurrently, then retries them during the discovery window. Call `mn_update()` while it runs, then query `mn_get_rooms()`.
 - `mn_discover_at(instance, address, port)` sends a unicast discovery probe to one known host and retries it during the discovery window. Use it when broadcast is disabled, blocked by a router, or suppressed by the local network.
 - `mn_discover_mdns()` uses DNS-SD/mDNS on UDP 5353 to discover `_multinet._udp.local` services. Check `mn_info.mdns_available` first; the mDNS socket is optional and does not prevent the other discovery methods from working.
 - `mn_join(instance, host, port, player_name)` joins by IPv4 address or hostname. A port of zero uses the configured port.

@@ -128,6 +128,7 @@ struct mn_instance {
     char bound_ipv4[48];
     int discovery_target_valid;
     int discovery_mdns;
+    int discovery_auto;
     uint64_t session_token;
     uint32_t next_player_id;
     uint16_t local_port;
@@ -959,6 +960,32 @@ static void mn_send_mdns_query(mn_instance *instance) {
     destination.sin_port = htons(MN_MDNS_PORT);
     destination.sin_addr.s_addr = inet_addr("224.0.0.251");
     mn_send_mdns_packet(instance, &destination, packet, offset);
+}
+
+
+static void mn_send_auto_discover(mn_instance *instance) {
+    mn_interface interfaces[64];
+    size_t count, i;
+    if (!instance) return;
+    if (instance->config.enable_broadcast) {
+        mn_send_discover(instance);
+        count = mn_get_interfaces(interfaces, 64);
+        for (i = 0; i < count && i < 64; ++i) {
+            struct sockaddr_in destination;
+            if (!interfaces[i].broadcast[0] ||
+                interfaces[i].type == MN_INTERFACE_LOOPBACK ||
+                strcmp(interfaces[i].broadcast, "255.255.255.255") == 0) continue;
+            if (instance->bound_ipv4[0] &&
+                strcmp(instance->bound_ipv4, interfaces[i].address) != 0) continue;
+            memset(&destination, 0, sizeof(destination));
+            destination.sin_family = AF_INET;
+            destination.sin_port = htons(instance->config.port);
+            if (inet_pton(AF_INET, interfaces[i].broadcast, &destination.sin_addr) != 1)
+                continue;
+            mn_send_discover_to(instance, &destination);
+        }
+    }
+    mn_send_mdns_query(instance);
 }
 
 static const char *mn_mdns_host_ipv4(const mn_instance *instance) {
@@ -1940,6 +1967,7 @@ static int mn_host_internal(mn_instance *instance, const char *player_name,
     if (instance->info.role == MN_ROLE_HOST) mn_leave(instance);
     if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
     instance->discovery_mdns = 0;
+    instance->discovery_auto = 0;
     max_players = max_players < 2 ? 2 : (max_players > MN_MAX_PLAYERS ? MN_MAX_PLAYERS : max_players);
     mn_close_current_socket(instance);
     new_socket = mn_open_socket_on(instance, instance->config.port, local_ipv4);
@@ -2029,11 +2057,38 @@ int mn_discover(mn_instance *instance) {
     instance->info.status = MN_STATUS_SEARCHING;
     instance->info.last_error[0] = '\0';
     instance->discovery_mdns = 0;
+    instance->discovery_auto = 0;
     instance->discovery_target_valid = 0;
     mn_send_discover(instance);
     return 1;
 }
 
+
+
+int mn_discover_auto(mn_instance *instance) {
+    if (!instance || !instance->ready) return 0;
+    if (!instance->config.enable_broadcast && instance->mdns_socket == MN_BAD_SOCKET) {
+        mn_set_error(instance, "No automatic discovery transport is available; use mn_discover_at or mn_join");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_HOST) {
+        mn_set_error(instance, "Leave the hosted room before searching");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    instance->room_count = 0;
+    memset(instance->rooms, 0, sizeof(instance->rooms));
+    instance->discovery_left = instance->config.discovery_seconds;
+    instance->discovery_tick = 0.0f;
+    instance->discovery_target_valid = 0;
+    instance->discovery_mdns = 0;
+    instance->discovery_auto = 1;
+    instance->info.role = MN_ROLE_NONE;
+    instance->info.status = MN_STATUS_SEARCHING;
+    instance->info.last_error[0] = '\0';
+    mn_send_auto_discover(instance);
+    return 1;
+}
 
 int mn_discover_mdns(mn_instance *instance) {
     if (!instance || !instance->ready) return 0;
@@ -2051,6 +2106,7 @@ int mn_discover_mdns(mn_instance *instance) {
     instance->discovery_left = instance->config.discovery_seconds;
     instance->discovery_tick = 0.0f;
     instance->discovery_target_valid = 0;
+    instance->discovery_auto = 0;
     instance->discovery_mdns = 1;
     instance->info.role = MN_ROLE_NONE;
     instance->info.status = MN_STATUS_SEARCHING;
@@ -2097,6 +2153,7 @@ int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname,
     instance->info.status = MN_STATUS_SEARCHING;
     instance->info.last_error[0] = '\0';
     instance->discovery_mdns = 0;
+    instance->discovery_auto = 0;
     instance->discovery_target = destination;
     instance->discovery_target_valid = 1;
     mn_send_discover_to(instance, &instance->discovery_target);
@@ -2137,6 +2194,7 @@ int mn_discover_on(mn_instance *instance, const mn_interface *network_interface)
     instance->info.status = MN_STATUS_SEARCHING;
     instance->info.last_error[0] = '\0';
     instance->discovery_mdns = 0;
+    instance->discovery_auto = 0;
     instance->discovery_target = destination;
     instance->discovery_target_valid = 1;
     mn_send_discover_to(instance, &instance->discovery_target);
@@ -2150,6 +2208,7 @@ void mn_stop_discovery(mn_instance *instance) {
     instance->discovery_left = 0.0f;
     instance->discovery_target_valid = 0;
     instance->discovery_mdns = 0;
+    instance->discovery_auto = 0;
 }
 
 size_t mn_get_rooms(const mn_instance *instance, mn_room *rooms, size_t capacity) {
@@ -2177,6 +2236,7 @@ static int mn_join_internal(mn_instance *instance, const char *host, uint16_t po
     }
     if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
     instance->discovery_mdns = 0;
+    instance->discovery_auto = 0;
     if (!mn_rebind_socket(instance, local_ipv4)) {
         mn_set_error(instance, "Could not bind the client socket to the selected local interface");
         return 0;
@@ -2504,7 +2564,9 @@ void mn_update(mn_instance *instance, float dt_seconds) {
         instance->discovery_left -= dt;
         instance->discovery_tick -= dt;
         if (instance->discovery_left > 0.0f && instance->discovery_tick <= 0.0f) {
-            if (instance->discovery_mdns)
+            if (instance->discovery_auto)
+                mn_send_auto_discover(instance);
+            else if (instance->discovery_mdns)
                 mn_send_mdns_query(instance);
             else if (instance->discovery_target_valid)
                 mn_send_discover_to(instance, &instance->discovery_target);
@@ -2517,6 +2579,7 @@ void mn_update(mn_instance *instance, float dt_seconds) {
             instance->info.role = MN_ROLE_NONE;
             instance->discovery_target_valid = 0;
             instance->discovery_mdns = 0;
+            instance->discovery_auto = 0;
             memset(&instance->discovery_target, 0, sizeof(instance->discovery_target));
         }
     }

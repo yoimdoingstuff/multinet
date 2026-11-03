@@ -207,7 +207,7 @@ static int run_scan(const mn_config *config, const char *target_host,
         } else if (target_host) {
             started = mn_discover_at(network, target_host, config->port);
         } else {
-            started = mn_discover(network);
+            started = mn_discover_auto(network);
         }
         if (!started) {
             mn_info info;
@@ -219,7 +219,7 @@ static int run_scan(const mn_config *config, const char *target_host,
     }
     printf("Searching %s for MultiNet rooms on UDP port %u...\n",
            use_mdns ? "mDNS/DNS-SD" :
-           (local_ipv4 ? local_ipv4 : (target_host ? target_host : "the local network")),
+           (local_ipv4 ? local_ipv4 : (target_host ? target_host : "all automatic LAN discovery methods")),
            (unsigned)config->port);
     start = monotonic_seconds();
     previous = start;

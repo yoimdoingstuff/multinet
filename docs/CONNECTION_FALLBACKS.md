@@ -2,13 +2,14 @@
 
 MultiNet deliberately does not depend on one discovery method. Local networks differ, and broadcast packets are often filtered even when normal UDP unicast is allowed.
 
-Use these connection paths in order:
+Use these connection paths in order. The default `mn_discover_auto()` / demo `scan` runs the first two local discovery methods together rather than making you choose one:
 
-1. **Automatic LAN broadcast discovery.** Call `mn_discover()`, continue calling `mn_update()`, and read `mn_get_rooms()`. This is the easiest option when the local subnet forwards UDP broadcast.
-2. **Directed/unicast discovery.** When broadcast is disabled or no rooms appear, call `mn_discover_at(instance, known_host, port)`. MultiNet sends a normal discovery request directly to that IPv4 address or hostname and retries it for the discovery window. This requires knowing the host address but does not require subnet broadcast.
-3. **DNS-SD/mDNS discovery.** Call `mn_discover_mdns()` or run `multinet_demo scan-mdns`. It looks for `_multinet._udp.local` service advertisements. This is useful when broadcast discovery is filtered but link-local multicast is allowed. mDNS is optional; check `mn_info.mdns_available` because another service or the OS may already own UDP port 5353.
-4. **Manual direct join.** When room discovery is blocked entirely, call `mn_join(instance, host, port, player_name)`. The host still needs to be reachable on its configured UDP port.
-5. **Port fallback.** The host and client can choose a different UDP port in `mn_config.port` or the join argument. This helps with a local port conflict, but both sides must agree on the selected port and the firewall must permit it.
+1. **Combined local discovery.** Call `mn_discover_auto()`: it sends global LAN broadcast, per-interface subnet broadcasts and mDNS/DNS-SD at the same time. This provides a better first attempt when you do not know which local discovery method the network allows.
+2. **Broadcast-only discovery.** Call `mn_discover()`, continue calling `mn_update()`, and read `mn_get_rooms()`. This is the easiest option when the local subnet forwards UDP broadcast.
+3. **Directed/unicast discovery.** When broadcast is disabled or no rooms appear, call `mn_discover_at(instance, known_host, port)`. MultiNet sends a normal discovery request directly to that IPv4 address or hostname and retries it for the discovery window. This requires knowing the host address but does not require subnet broadcast.
+4. **DNS-SD/mDNS-only discovery.** Call `mn_discover_mdns()` or run `multinet_demo scan-mdns`. It looks for `_multinet._udp.local` service advertisements. This is useful when broadcast discovery is filtered but link-local multicast is allowed. mDNS is optional; check `mn_info.mdns_available` because another service or the OS may already own UDP port 5353.
+5. **Manual direct join.** When room discovery is blocked entirely, call `mn_join(instance, host, port, player_name)`. The host still needs to be reachable on its configured UDP port.
+6. **Port fallback.** The host and client can choose a different UDP port in `mn_config.port` or the join argument. This helps with a local port conflict, but both sides must agree on the selected port and the firewall must permit it.
 
 There is no hidden relay or tunnel. These are ordinary UDP connection attempts over the network the user is already allowed to use. A firewall or network policy may block all of them; MultiNet reports a timeout/error instead of trying to bypass that restriction.
 

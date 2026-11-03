@@ -28,6 +28,9 @@ int main(void) {
     mn_instance *host = NULL;
     mn_instance *client = NULL;
     mn_instance *scanner = NULL;
+    mn_instance *auto_scanner = NULL;
+    mn_config auto_config;
+    mn_info auto_info;
     mn_room discovered_rooms[MN_MAX_ROOMS];
     size_t discovered_count = 0;
     mn_instance *extra_clients[MN_MAX_PLAYERS - 2u] = {0};
@@ -52,7 +55,10 @@ int main(void) {
     host = mn_create(&config);
     client = mn_create(&config);
     scanner = mn_create(&config);
-    CHECK(host != NULL && client != NULL && scanner != NULL,
+    auto_config = config;
+    auto_config.enable_broadcast = 1;
+    auto_scanner = mn_create(&auto_config);
+    CHECK(host != NULL && client != NULL && scanner != NULL && auto_scanner != NULL,
           "create independent host, client and discovery instances");
     interface_count = mn_get_interfaces(interfaces, 64);
     CHECK(interface_count > 0, "enumerate local IPv4 network interfaces");
@@ -66,6 +72,22 @@ int main(void) {
         }
     }
     CHECK(found_loopback, "enumerate the IPv4 loopback interface");
+
+    CHECK(mn_discover_auto(auto_scanner),
+          "start combined broadcast, directed-subnet and mDNS discovery");
+    mn_get_info(auto_scanner, &auto_info);
+    CHECK(auto_info.status == MN_STATUS_SEARCHING,
+          "automatic discovery enters the searching state");
+    for (iteration = 0; iteration < 12; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(auto_scanner, 0.01f);
+        sleep_ms(5);
+    }
+    mn_stop_discovery(auto_scanner);
+    mn_get_info(auto_scanner, &auto_info);
+    CHECK(auto_info.status == MN_STATUS_OFFLINE,
+          "automatic discovery can be stopped cleanly");
+
     CHECK(mn_host_on(host, "Host", "Local Test", MN_MAX_PLAYERS,
                      loopback_interface.address),
           "host explicitly on the selected loopback interface");
@@ -292,6 +314,7 @@ int main(void) {
     printf("MultiNet tests passed (16-player room, snapshots, messages, match start, leave).\n");
 cleanup:
     for (j = 0; j < extra_count; ++j) if (extra_clients[j]) mn_destroy(extra_clients[j]);
+    if (auto_scanner) mn_destroy(auto_scanner);
     if (scanner) mn_destroy(scanner);
     if (client) mn_destroy(client);
     if (host) mn_destroy(host);
