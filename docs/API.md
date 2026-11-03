@@ -49,6 +49,12 @@ Use `mn_send_reliable_message()` for lobby commands, ready state, match results 
 
 Drain `mn_poll_event()` each frame or on a regular tick. Events are FIFO and include connection changes, player joins/leaves, room discovery, match start, application messages and errors. The queue has a finite capacity; drain it regularly to avoid dropping older events under heavy traffic.
 
+## Standalone examples
+
+The `multinet_chat` target demonstrates a small message-oriented application. It sends a reliable text message on a caller-chosen channel and prints incoming message and acknowledgement/failure events.
+
+The `multinet_2d_object` target demonstrates a renderer-independent replicated object. It stores the object's 2D coordinates in `mn_player.position.x` and `mn_player.position.y`, publishes local state with `mn_set_local_player()`, and reads remote states with `mn_get_players()`. Both examples are built and installed when `MULTINET_BUILD_DEMO` is enabled.
+
 ## Player data mapping for Golfgame
 
 | MultiNet field | Suggested Golfgame use |

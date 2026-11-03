@@ -39,7 +39,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The build produces `multinet` (static library), `multinet_demo` (interactive demo) and `multinet_tests` (loopback integration test). Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
+The build produces `multinet` (static library), `multinet_demo` (interactive demo), `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example) and `multinet_tests` (loopback integration test). Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
 
 An optional Clang/libFuzzer target exercises malformed packet framing, room-offer parsing and player-state decoding. It is separate from the normal cross-platform build:
 
@@ -48,6 +48,28 @@ CC=clang cmake -S . -B build-fuzz -DMULTINET_BUILD_FUZZERS=ON -DMULTINET_BUILD_D
 cmake --build build-fuzz --parallel
 ./build-fuzz/multinet_packet_fuzzer -max_len=1472 -runs=10000
 ```
+
+## Examples
+
+The small examples use only the public library API and run as separate processes.
+
+For a reliable chat-message exchange, start a host on one PC and join from another:
+
+```sh
+./build/multinet_chat host Alice "Hello from Alice"
+./build/multinet_chat join 192.168.1.20 Bob "Hello from Bob"
+```
+
+The host waits for a client, the client joins the room, and each process sends one reliable message on channel 1. The sample prints received messages and delivery acknowledgement/failure events. An optional final argument sets the UDP port.
+
+For a replicated 2D point, start the host and then a client:
+
+```sh
+./build/multinet_2d_object host Alice
+./build/multinet_2d_object join 192.168.1.20 Bob
+```
+
+Each process moves its own point and prints all replicated player positions once per second. The example uses `mn_player.position.x/y` as the 2D coordinates; the library itself remains renderer- and engine-independent.
 
 ## Demo
 

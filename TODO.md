@@ -41,7 +41,8 @@
 - [ ] Integrate this library into Golfgame and remove its duplicated `tg_network` implementation.
 - [x] Add package-config generation and an installed-consumer CI test.
 - [ ] Publish a versioned release archive.
-- [ ] Add examples for a non-game chat/message app and a simple replicated 2D object.
+- [x] Add a reliable chat-message example using application-defined channels and delivery acknowledgements.
+- [x] Add a simple replicated 2D object example using player position state.
 - [x] Add an optional Clang/libFuzzer target for malformed headers, lengths, room offers and player-state payloads.
 - [x] Document the Windows multi-process LAN manual test checklist (physical-device execution remains a release validation task).
 
