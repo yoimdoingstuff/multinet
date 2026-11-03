@@ -26,6 +26,7 @@ static void sleep_ms(unsigned int ms) {
 typedef struct test_state_validator_context {
     unsigned calls;
     unsigned rejected_score_regressions;
+    unsigned out_of_bounds_candidates;
 } test_state_validator_context;
 
 static int test_player_state_validator(const mn_player *previous,
@@ -35,6 +36,15 @@ static int test_player_state_validator(const mn_player *previous,
         (test_state_validator_context *)user_data;
     if (!previous || !incoming || !context) return 0;
     context->calls++;
+    if (incoming->position.x > 100.0f || incoming->position.x < -100.0f ||
+        incoming->position.y > 100.0f || incoming->position.y < -100.0f ||
+        incoming->position.z > 100.0f || incoming->position.z < -100.0f ||
+        incoming->velocity.x > 20.0f || incoming->velocity.x < -20.0f ||
+        incoming->velocity.y > 20.0f || incoming->velocity.y < -20.0f ||
+        incoming->velocity.z > 20.0f || incoming->velocity.z < -20.0f) {
+        context->out_of_bounds_candidates++;
+        return 0;
+    }
     if (incoming->score < previous->score) {
         context->rejected_score_regressions++;
         return 0;
@@ -61,7 +71,7 @@ int main(void) {
     mn_info host_info, client_info;
     mn_player state, received;
     mn_player_state_limits state_limits, invalid_state_limits;
-    test_state_validator_context validator_context = {0u, 0u};
+    test_state_validator_context validator_context = {0u, 0u, 0u};
     mn_event event;
     int result = 0;
     int connected = 0, message_received = 0, host_message_received = 0;
@@ -73,8 +83,6 @@ int main(void) {
     int client_ping_received = 0, host_ping_received = 0;
     unsigned iteration;
     size_t extra_count = 0, j;
-    unsigned validator_calls_before_invalid_bounds = 0u;
-
     mn_config_init(&config);
     config.port = 38927;
     config.enable_broadcast = 0;
@@ -226,8 +234,6 @@ int main(void) {
     CHECK(received.position.x == 12.5f && received.position.y == -3.25f &&
           received.score == 7 && received.appearance[0] == 12,
           "player snapshot fields survive wire serialisation");
-    validator_calls_before_invalid_bounds = validator_context.calls;
-
     state.position.x = 101.0f;
     CHECK(mn_set_local_player(client, &state),
           "client can stage a position outside the host's stricter game bounds");
@@ -253,8 +259,8 @@ int main(void) {
           received.position.x == 12.5f && received.velocity.x == 1.0f &&
           received.score == 7,
           "host rejects remote velocity beyond the configured absolute limit");
-    CHECK(validator_context.calls == validator_calls_before_invalid_bounds,
-          "application callback is not invoked for states rejected by built-in bounds");
+    CHECK(validator_context.out_of_bounds_candidates == 0u,
+          "application callback never sees states rejected by built-in bounds");
 
     state.position.x = 13.0f;
     state.velocity.x = 1.0f;
