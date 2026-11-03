@@ -2484,7 +2484,6 @@ int mn_send_message(mn_instance *instance, uint32_t target_player_id,
     uint8_t packet[MN_MAX_DATAGRAM_SIZE];
     uint8_t payload[20u + MN_MAX_MESSAGE_BYTES];
     size_t packet_size;
-    if (out_delivery_id) *out_delivery_id = 0;
     if (!instance || !instance->ready || size > MN_MAX_MESSAGE_BYTES ||
         (size > 0 && !data)) return 0;
     if (instance->info.role == MN_ROLE_HOST && instance->info.status == MN_STATUS_HOSTING) {
@@ -2522,6 +2521,7 @@ int mn_send_reliable_message_ex(mn_instance *instance, uint32_t target_player_id
                                 uint32_t *out_delivery_id) {
     uint32_t message_id;
     size_t i, needed = 0, free_slots = 0;
+    if (out_delivery_id) *out_delivery_id = 0;
     if (!instance || !instance->ready || size > MN_MAX_MESSAGE_BYTES ||
         (size > 0 && !data)) return 0;
     if (instance->info.role == MN_ROLE_HOST &&
