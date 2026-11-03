@@ -1985,8 +1985,10 @@ static void mn_handle_client_pong(mn_instance *instance,
     mn_complete_ping(instance);
 }
 
-static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
-                             size_t packet_size, const struct sockaddr_in *from) {
+static void mn_handle_packet_internal(mn_instance *instance, const uint8_t *packet,
+                                      size_t packet_size,
+                                      const struct sockaddr_in *from,
+                                      int authenticated) {
     uint8_t type;
     uint32_t app_id, room_id;
     const uint8_t *payload;
@@ -2027,11 +2029,11 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
         if (mn_make_packet(plaintext, inner_type, app_id, room_id, NULL,
                            ciphertext_size) != inner_size)
             return;
-        mn_handle_packet(instance, plaintext, inner_size, from);
+        mn_handle_packet_internal(instance, plaintext, inner_size, from, 1);
         return;
     }
     /* Once a room key is configured, reject every unauthenticated game packet. */
-    if (instance->encryption_enabled) return;
+    if (instance->encryption_enabled && !authenticated) return;
 
     if (type == MN_PKT_DISCOVER && payload_size == 0 &&
         instance->info.role == MN_ROLE_HOST &&
@@ -2372,6 +2374,11 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             return;
         }
     }
+}
+
+static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
+                             size_t packet_size, const struct sockaddr_in *from) {
+    mn_handle_packet_internal(instance, packet, packet_size, from, 0);
 }
 
 void mn_player_state_limits_init(mn_player_state_limits *limits) {
@@ -3077,12 +3084,18 @@ int mn_unpair_device(mn_instance *instance,
     for (i = 0; i < instance->paired_device_count; ++i) {
         if (memcmp(instance->paired_devices[i], device_id, MN_DEVICE_ID_BYTES) == 0) {
             size_t remaining = instance->paired_device_count - i - 1u;
-            if (remaining != 0u)
+            if (remaining != 0u) {
                 memmove(instance->paired_devices[i], instance->paired_devices[i + 1u],
                         remaining * MN_DEVICE_ID_BYTES);
+                memmove(instance->paired_device_secrets[i],
+                        instance->paired_device_secrets[i + 1u],
+                        remaining * MN_DEVICE_SECRET_BYTES);
+            }
             instance->paired_device_count--;
             memset(instance->paired_devices[instance->paired_device_count], 0,
                    MN_DEVICE_ID_BYTES);
+            mn_secure_zero(instance->paired_device_secrets[instance->paired_device_count],
+                           MN_DEVICE_SECRET_BYTES);
             return 1;
         }
     }
@@ -3092,6 +3105,8 @@ int mn_unpair_device(mn_instance *instance,
 void mn_clear_paired_devices(mn_instance *instance) {
     if (!instance || !instance->ready) return;
     memset(instance->paired_devices, 0, sizeof(instance->paired_devices));
+    mn_secure_zero(instance->paired_device_secrets,
+                   sizeof(instance->paired_device_secrets));
     instance->paired_device_count = 0;
 }
 
@@ -3171,6 +3186,8 @@ void mn_clear_room_key(mn_instance *instance) {
         return;
     mn_secure_zero(instance->room_key, sizeof(instance->room_key));
     instance->encryption_enabled = 0;
+    instance->pairing_required = 0;
+    mn_clear_paired_devices(instance);
     instance->secure_nonce_counter = 0;
     memset(instance->secure_replays, 0, sizeof(instance->secure_replays));
     instance->secure_replay_age = 0;
