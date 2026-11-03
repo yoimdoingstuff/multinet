@@ -192,6 +192,7 @@ struct mn_instance {
 static void mn_emit_reliable_status(mn_instance *instance, mn_event_type type,
                                     const mn_reliable_entry *entry,
                                     uint32_t peer_id, const char *message);
+static void mn_secure_zero(void *memory, size_t size);
 
 static void mn_copy_text(char *destination, size_t capacity, const char *source) {
     size_t length;
@@ -761,32 +762,38 @@ static void mn_send_to(mn_instance *instance, const struct sockaddr_in *to,
                        const uint8_t *data, size_t size) {
     uint8_t secure_packet[MN_MAX_DATAGRAM_SIZE];
     uint8_t nonce[MN_SECURE_NONCE_BYTES];
+    uint8_t aad[MN_HEADER_SIZE + 1u];
     size_t secure_size, cipher_size;
+    uint8_t inner_type;
     if (!instance || !to || !data || size == 0) return;
     if (!instance->encryption_enabled) {
         mn_send_raw_to(instance, to, data, size);
         return;
     }
     if (size < MN_HEADER_SIZE || data[5] == MN_PKT_SECURE ||
-        size + MN_HEADER_SIZE + MN_SECURE_OVERHEAD > MN_MAX_DATAGRAM_SIZE ||
+        size + MN_SECURE_OVERHEAD + 1u > MN_MAX_DATAGRAM_SIZE ||
         instance->secure_nonce_counter == UINT64_MAX)
         return;
 
+    inner_type = data[5];
+    cipher_size = size - MN_HEADER_SIZE;
     instance->secure_nonce_counter++;
     mn_write_u32(nonce, instance->secure_nonce_prefix);
     mn_write_u64(nonce + 4u, instance->secure_nonce_counter);
-    cipher_size = size;
     secure_size = mn_make_packet(secure_packet, MN_PKT_SECURE,
                                  mn_read_u32(data + 8u),
                                  mn_read_u32(data + 12u), NULL,
-                                 MN_SECURE_OVERHEAD + cipher_size);
+                                 MN_SECURE_OVERHEAD + 1u + cipher_size);
     if (secure_size == 0) return;
+    memcpy(aad, secure_packet, MN_HEADER_SIZE);
+    aad[MN_HEADER_SIZE] = inner_type;
     memcpy(secure_packet + MN_HEADER_SIZE, nonce, sizeof(nonce));
+    secure_packet[MN_HEADER_SIZE + sizeof(nonce)] = inner_type;
     if (!mn_crypto_aes256gcm_encrypt(instance->room_key, nonce,
-                                     secure_packet, MN_HEADER_SIZE,
-                                     data, size,
-                                     secure_packet + MN_HEADER_SIZE + sizeof(nonce),
-                                     secure_packet + MN_HEADER_SIZE + sizeof(nonce) + cipher_size))
+                                     aad, sizeof(aad),
+                                     data + MN_HEADER_SIZE, cipher_size,
+                                     secure_packet + MN_HEADER_SIZE + sizeof(nonce) + 1u,
+                                     secure_packet + MN_HEADER_SIZE + sizeof(nonce) + 1u + cipher_size))
         return;
     mn_send_raw_to(instance, to, secure_packet, secure_size);
 }
@@ -1919,24 +1926,31 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
 
     if (type == MN_PKT_SECURE) {
         uint8_t plaintext[MN_MAX_DATAGRAM_SIZE];
-        size_t ciphertext_size;
-        if (!instance->encryption_enabled || payload_size < MN_SECURE_OVERHEAD +
-            MN_HEADER_SIZE) return;
-        ciphertext_size = payload_size - MN_SECURE_OVERHEAD;
+        uint8_t aad[MN_HEADER_SIZE + 1u];
+        uint8_t inner_type;
+        size_t ciphertext_size, inner_size;
+        if (!instance->encryption_enabled ||
+            payload_size < MN_SECURE_OVERHEAD + 1u) return;
+        inner_type = payload[MN_SECURE_NONCE_BYTES];
+        if (inner_type == MN_PKT_SECURE) return;
+        ciphertext_size = payload_size - MN_SECURE_OVERHEAD - 1u;
+        inner_size = MN_HEADER_SIZE + ciphertext_size;
+        if (inner_size > sizeof(plaintext)) return;
+        memcpy(aad, packet, MN_HEADER_SIZE);
+        aad[MN_HEADER_SIZE] = inner_type;
         if (!mn_crypto_aes256gcm_decrypt(instance->room_key, payload,
-                                         packet, MN_HEADER_SIZE,
-                                         payload + MN_SECURE_NONCE_BYTES,
+                                         aad, sizeof(aad),
+                                         payload + MN_SECURE_NONCE_BYTES + 1u,
                                          ciphertext_size,
-                                         payload + MN_SECURE_NONCE_BYTES + ciphertext_size,
-                                         plaintext))
-            return;
-        if (ciphertext_size < MN_HEADER_SIZE ||
-            mn_read_u32(plaintext) != MN_MAGIC ||
-            mn_read_u32(plaintext + 8u) != instance->config.app_id ||
-            plaintext[5] == MN_PKT_SECURE)
+                                         payload + MN_SECURE_NONCE_BYTES + 1u + ciphertext_size,
+                                         plaintext + MN_HEADER_SIZE))
             return;
         if (!mn_accept_secure_nonce(instance, from, payload)) return;
-        mn_handle_packet(instance, plaintext, ciphertext_size, from);
+        /* Rebuild the authenticated inner header; only the payload is encrypted. */
+        if (mn_make_packet(plaintext, inner_type, app_id, room_id, NULL,
+                           ciphertext_size) != inner_size)
+            return;
+        mn_handle_packet(instance, plaintext, inner_size, from);
         return;
     }
     /* Once a room key is configured, reject every unauthenticated game packet. */
@@ -1988,6 +2002,7 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             peer = &instance->peers[i];
             memset(peer, 0, sizeof(*peer));
             peer->address = *from;
+            peer->pending_approval = 1;
             memcpy(peer->device_id, device_id, MN_DEVICE_ID_BYTES);
             memcpy(peer->player.name, name, sizeof(name));
             peer->player.name[MN_PLAYER_NAME_LENGTH - 1] = '\0';
@@ -2003,18 +2018,7 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             mn_activate_peer(instance, peer);
             return;
         }
-        if (type == MN_PKT_PAIRING_DENIED && room_id == 0 &&
-            payload_size == 0 && instance->info.role == MN_ROLE_CLIENT &&
-            instance->info.status == MN_STATUS_CONNECTING &&
-            mn_same_address(from, &instance->server)) {
-            instance->info.role = MN_ROLE_NONE;
-            instance->info.status = MN_STATUS_OFFLINE;
-            instance->connect_elapsed = 0.0f;
-            mn_emit_simple_event(instance, MN_EVENT_PAIRING_REJECTED,
-                                 "The host rejected this device's pairing request", 0);
-            return;
-        }
-        if (room_id != instance->info.room_id) return;
+`        if (room_id != instance->info.room_id) return;
         if (type == MN_PKT_STATE && payload_size == 12u + MN_WIRE_PLAYER_SIZE) {
             uint64_t token = mn_read_u64(payload);
             uint32_t sequence = mn_read_u32(payload + 8);
@@ -2082,6 +2086,15 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
     if (instance->info.role == MN_ROLE_CLIENT &&
         mn_same_address(from, &instance->server)) {
         instance->server_silence = 0.0f;
+        if (type == MN_PKT_PAIRING_DENIED && room_id == 0 &&
+            payload_size == 0 && instance->info.status == MN_STATUS_CONNECTING) {
+            instance->info.role = MN_ROLE_NONE;
+            instance->info.status = MN_STATUS_OFFLINE;
+            instance->connect_elapsed = 0.0f;
+            mn_emit_simple_event(instance, MN_EVENT_PAIRING_REJECTED,
+                                 "The host rejected this device's pairing request", 0);
+            return;
+        }
         if (room_id != instance->info.room_id &&
             !(type == MN_PKT_WELCOME && instance->info.status == MN_STATUS_CONNECTING)) return;
         if (type == MN_PKT_WELCOME && payload_size == MN_WELCOME_SIZE &&
