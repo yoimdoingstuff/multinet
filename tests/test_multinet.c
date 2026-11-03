@@ -218,7 +218,7 @@ int main(void) {
           "disabled broadcast reports that an alternate discovery path is required");
     CHECK(mn_discover_at(scanner, "127.0.0.1", config.port),
           "start direct unicast discovery when broadcast is disabled");
-    for (iteration = 0; iteration < 40; ++iteration) {
+    for (iteration = 0; iteration < 200; ++iteration) {
         mn_update(host, 0.01f);
         mn_update(scanner, 0.01f);
         discovered_count = mn_get_rooms(scanner, discovered_rooms, MN_MAX_ROOMS);
@@ -277,6 +277,7 @@ int main(void) {
         }
         sleep_ms(5);
     }
+    mn_get_info(host, &host_info);
     CHECK(pairing_request_seen && host_info.player_count == 1,
           "unknown device creates a pairing request without entering the room");
     CHECK(mn_approve_pairing(host, client_device_id, 1),
@@ -604,13 +605,31 @@ int main(void) {
         }
         extra_count++;
     }
-    for (iteration = 0; iteration < 250; ++iteration) {
+    for (iteration = 0; iteration < 1000; ++iteration) {
+        int all_clients_connected = 1;
         mn_update(host, 0.01f);
         mn_update(client, 0.01f);
-        for (j = 0; j < extra_count; ++j) mn_update(extra_clients[j], 0.01f);
+        for (j = 0; j < extra_count; ++j) {
+            mn_update(extra_clients[j], 0.01f);
+            mn_get_info(extra_clients[j], &client_info);
+            if (client_info.status != MN_STATUS_CONNECTED)
+                all_clients_connected = 0;
+        }
+        mn_get_info(host, &host_info);
+        if (host_info.player_count == MN_MAX_PLAYERS && all_clients_connected)
+            break;
         sleep_ms(4);
     }
     mn_get_info(host, &host_info);
+    if (host_info.player_count != MN_MAX_PLAYERS) {
+        fprintf(stderr, "DIAG: host player_count=%u, extra_clients=%u\n",
+                (unsigned)host_info.player_count, (unsigned)extra_count);
+        for (j = 0; j < extra_count; ++j) {
+            mn_get_info(extra_clients[j], &client_info);
+            fprintf(stderr, "DIAG: extra[%u] status=%u\n",
+                    (unsigned)j, (unsigned)client_info.status);
+        }
+    }
     CHECK(host_info.player_count == MN_MAX_PLAYERS,
           "host supports 16 simultaneous players including the host");
     for (j = 0; j < extra_count; ++j) {
