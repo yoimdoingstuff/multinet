@@ -335,6 +335,68 @@ int main(void) {
               "all additional clients connect");
     }
 
+    {
+        static const char broadcast_text[] = "reliable-room-broadcast";
+        uint32_t broadcast_delivery_id = 0;
+        uint32_t acknowledged_mask = 0;
+        uint32_t expected_mask = 0;
+        int client_received[MN_MAX_PLAYERS] = {0};
+        size_t received_count = 0;
+        size_t acknowledged_count = 0;
+        unsigned player_id;
+        for (player_id = 2; player_id <= MN_MAX_PLAYERS; ++player_id)
+            expected_mask |= (uint32_t)1u << player_id;
+
+        CHECK(mn_send_reliable_message_ex(host, 0, 113, broadcast_text,
+                                          sizeof(broadcast_text) - 1,
+                                          &broadcast_delivery_id) &&
+              broadcast_delivery_id != 0,
+              "host queues a reliable broadcast to every remote player");
+        for (iteration = 0; iteration < 120 && acknowledged_count < MN_MAX_PLAYERS - 1u;
+             ++iteration) {
+            mn_update(host, 0.01f);
+            mn_update(client, 0.01f);
+            while (mn_poll_event(client, &event)) {
+                if (event.type == MN_EVENT_MESSAGE && event.channel == 113 &&
+                    event.data_size == sizeof(broadcast_text) - 1 &&
+                    memcmp(event.data, broadcast_text, sizeof(broadcast_text) - 1) == 0 &&
+                    !client_received[0]) {
+                    client_received[0] = 1;
+                    received_count++;
+                }
+            }
+            for (j = 0; j < extra_count; ++j) {
+                mn_update(extra_clients[j], 0.01f);
+                while (mn_poll_event(extra_clients[j], &event)) {
+                    if (event.type == MN_EVENT_MESSAGE && event.channel == 113 &&
+                        event.data_size == sizeof(broadcast_text) - 1 &&
+                        memcmp(event.data, broadcast_text, sizeof(broadcast_text) - 1) == 0 &&
+                        !client_received[j + 1u]) {
+                        client_received[j + 1u] = 1;
+                        received_count++;
+                    }
+                }
+            }
+            while (mn_poll_event(host, &event)) {
+                if (event.type == MN_EVENT_MESSAGE_ACKNOWLEDGED &&
+                    event.delivery_id == broadcast_delivery_id &&
+                    event.player_id >= 2u && event.player_id <= MN_MAX_PLAYERS) {
+                    uint32_t bit = (uint32_t)1u << event.player_id;
+                    if ((acknowledged_mask & bit) == 0) {
+                        acknowledged_mask |= bit;
+                        acknowledged_count++;
+                    }
+                }
+            }
+            sleep_ms(5);
+        }
+        CHECK(received_count == MN_MAX_PLAYERS - 1u,
+              "all 15 remote clients receive the reliable room broadcast");
+        CHECK(acknowledged_count == MN_MAX_PLAYERS - 1u &&
+              acknowledged_mask == expected_mask,
+              "host receives one matching acknowledgement from every remote player");
+    }
+
     for (j = 0; j < extra_count; ++j) mn_leave(extra_clients[j]);
     mn_get_info(client, &client_info);
     CHECK(mn_send_reliable_message_ex(host, client_info.local_player_id, 112,
