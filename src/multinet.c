@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later */
 /* MultiNet C11 implementation. The public API is declared in multinet.h. */
 #include "multinet.h"
+#include "multinet_crypto.h"
 
 #include <math.h>
 #include <float.h>
@@ -39,7 +40,7 @@ typedef socklen_t mn_socklen;
 #endif
 
 #define MN_MAGIC 0x4D4E4554u /* "MNET" */
-#define MN_PROTOCOL_VERSION 3u
+#define MN_PROTOCOL_VERSION 4u
 #define MN_HEADER_SIZE 16u
 #define MN_MAX_DATAGRAM_SIZE 1472u
 #define MN_EVENT_QUEUE_CAPACITY 128u
@@ -54,6 +55,10 @@ typedef socklen_t mn_socklen;
 #define MN_MDNS_PORT 5353u
 #define MN_MDNS_MAX_PACKET 1400u
 #define MN_RELIABLE_SEEN_IDS 64u
+#define MN_SECURE_REPLAY_CAPACITY 64u
+#define MN_SECURE_NONCE_BYTES 12u
+#define MN_SECURE_TAG_BYTES 16u
+#define MN_SECURE_OVERHEAD (MN_SECURE_NONCE_BYTES + MN_SECURE_TAG_BYTES)
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(float) == 4, "MultiNet requires 32-bit floats");
@@ -74,11 +79,15 @@ enum mn_packet_type {
     MN_PKT_RELIABLE,
     MN_PKT_RELIABLE_ACK,
     MN_PKT_PING,
-    MN_PKT_PONG
+    MN_PKT_PONG,
+    MN_PKT_PAIRING_DENIED,
+    MN_PKT_SECURE
 };
 
 typedef struct mn_peer {
     int active;
+    int pending_approval;
+    uint8_t device_id[MN_DEVICE_ID_BYTES];
     uint32_t id;
     uint64_t token;
     float silence;
@@ -112,6 +121,15 @@ typedef struct mn_seen_reliable {
     uint32_t age;
 } mn_seen_reliable;
 
+typedef struct mn_secure_replay {
+    int active;
+    struct sockaddr_in address;
+    uint32_t nonce_prefix;
+    uint64_t highest_counter;
+    uint64_t seen_window;
+    uint32_t age;
+} mn_secure_replay;
+
 struct mn_instance {
     int ready;
     mn_socket socket;
@@ -125,6 +143,16 @@ struct mn_instance {
     int join_allowlist_enabled;
     size_t join_allowlist_count;
     char join_allowlist[MN_MAX_JOIN_ALLOWLIST][48];
+    uint8_t device_id[MN_DEVICE_ID_BYTES];
+    int pairing_required;
+    size_t paired_device_count;
+    uint8_t paired_devices[MN_MAX_PAIRED_DEVICES][MN_DEVICE_ID_BYTES];
+    int encryption_enabled;
+    uint8_t room_key[MN_ROOM_KEY_BYTES];
+    uint32_t secure_nonce_prefix;
+    uint64_t secure_nonce_counter;
+    uint32_t secure_replay_age;
+    mn_secure_replay secure_replays[MN_SECURE_REPLAY_CAPACITY];
     mn_player players[MN_MAX_PLAYERS];
     mn_room rooms[MN_MAX_ROOMS];
     size_t room_count;
@@ -591,7 +619,7 @@ static mn_peer *mn_find_peer_address(mn_instance *instance,
                                      const struct sockaddr_in *address) {
     size_t i;
     for (i = 0; i < MN_MAX_PLAYERS; ++i) {
-        if (instance->peers[i].active &&
+        if ((instance->peers[i].active || instance->peers[i].pending_approval) &&
             mn_same_address(&instance->peers[i].address, address))
             return &instance->peers[i];
     }
@@ -716,17 +744,106 @@ static size_t mn_make_packet(uint8_t *out, uint8_t type, uint32_t app_id,
     return total;
 }
 
+static void mn_send_raw_to(mn_instance *instance, const struct sockaddr_in *to,
+                           const uint8_t *data, size_t size) {
+    if (!instance || instance->socket == MN_BAD_SOCKET || !to || !data || size == 0)
+        return;
+#ifdef _WIN32
+    (void)sendto(instance->socket, (const char *)data, (int)size, 0,
+                 (const struct sockaddr *)to, (int)sizeof(*to));
+#else
+    (void)sendto(instance->socket, (const char *)data, size, 0,
+                 (const struct sockaddr *)to, (socklen_t)sizeof(*to));
+#endif
+}
+
 static void mn_send_to(mn_instance *instance, const struct sockaddr_in *to,
                        const uint8_t *data, size_t size) {
-    if (instance && instance->socket != MN_BAD_SOCKET && to && data && size) {
-#ifdef _WIN32
-        (void)sendto(instance->socket, (const char *)data, (int)size, 0,
-                     (const struct sockaddr *)to, (int)sizeof(*to));
-#else
-        (void)sendto(instance->socket, (const char *)data, size, 0,
-                     (const struct sockaddr *)to, (socklen_t)sizeof(*to));
-#endif
+    uint8_t secure_packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t nonce[MN_SECURE_NONCE_BYTES];
+    size_t secure_size, cipher_size;
+    if (!instance || !to || !data || size == 0) return;
+    if (!instance->encryption_enabled) {
+        mn_send_raw_to(instance, to, data, size);
+        return;
     }
+    if (size < MN_HEADER_SIZE || data[5] == MN_PKT_SECURE ||
+        size + MN_HEADER_SIZE + MN_SECURE_OVERHEAD > MN_MAX_DATAGRAM_SIZE ||
+        instance->secure_nonce_counter == UINT64_MAX)
+        return;
+
+    instance->secure_nonce_counter++;
+    mn_write_u32(nonce, instance->secure_nonce_prefix);
+    mn_write_u64(nonce + 4u, instance->secure_nonce_counter);
+    cipher_size = size;
+    secure_size = mn_make_packet(secure_packet, MN_PKT_SECURE,
+                                 mn_read_u32(data + 8u),
+                                 mn_read_u32(data + 12u), NULL,
+                                 MN_SECURE_OVERHEAD + cipher_size);
+    if (secure_size == 0) return;
+    memcpy(secure_packet + MN_HEADER_SIZE, nonce, sizeof(nonce));
+    if (!mn_crypto_aes256gcm_encrypt(instance->room_key, nonce,
+                                     secure_packet, MN_HEADER_SIZE,
+                                     data, size,
+                                     secure_packet + MN_HEADER_SIZE + sizeof(nonce),
+                                     secure_packet + MN_HEADER_SIZE + sizeof(nonce) + cipher_size))
+        return;
+    mn_send_raw_to(instance, to, secure_packet, secure_size);
+}
+
+static int mn_accept_secure_nonce(mn_instance *instance,
+                                  const struct sockaddr_in *from,
+                                  const uint8_t nonce[MN_SECURE_NONCE_BYTES]) {
+    uint32_t prefix = mn_read_u32(nonce);
+    uint64_t counter = mn_read_u64(nonce + 4u);
+    mn_secure_replay *slot = NULL;
+    size_t i;
+    if (counter == 0) return 0;
+    for (i = 0; i < MN_SECURE_REPLAY_CAPACITY; ++i) {
+        mn_secure_replay *entry = &instance->secure_replays[i];
+        if (entry->active && entry->nonce_prefix == prefix &&
+            mn_same_address(&entry->address, from)) {
+            slot = entry;
+            break;
+        }
+    }
+    if (!slot) {
+        for (i = 0; i < MN_SECURE_REPLAY_CAPACITY; ++i) {
+            if (!instance->secure_replays[i].active) {
+                slot = &instance->secure_replays[i];
+                break;
+            }
+        }
+        if (!slot) {
+            slot = &instance->secure_replays[0];
+            for (i = 1; i < MN_SECURE_REPLAY_CAPACITY; ++i) {
+                if (instance->secure_replays[i].age < slot->age)
+                    slot = &instance->secure_replays[i];
+            }
+        }
+        memset(slot, 0, sizeof(*slot));
+        slot->active = 1;
+        slot->address = *from;
+        slot->nonce_prefix = prefix;
+        slot->highest_counter = counter;
+        slot->seen_window = 1u;
+        slot->age = ++instance->secure_replay_age;
+        return 1;
+    }
+    if (counter > slot->highest_counter) {
+        uint64_t shift = counter - slot->highest_counter;
+        slot->seen_window = shift >= 64u ? 1u : (slot->seen_window << (unsigned)shift) | 1u;
+        slot->highest_counter = counter;
+    } else {
+        uint64_t difference = slot->highest_counter - counter;
+        uint64_t bit;
+        if (difference >= 64u) return 0;
+        bit = (uint64_t)1u << (unsigned)difference;
+        if ((slot->seen_window & bit) != 0u) return 0;
+        slot->seen_window |= bit;
+    }
+    slot->age = ++instance->secure_replay_age;
+    return 1;
 }
 
 static size_t mn_active_player_count(const mn_instance *instance) {
@@ -810,6 +927,63 @@ static void mn_broadcast_snapshot(mn_instance *instance) {
         if (instance->peers[i].active)
             mn_send_snapshot_to(instance, &instance->peers[i].address);
     }
+}
+
+static int mn_device_id_is_valid(const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+    size_t i;
+    uint8_t value = 0;
+    if (!device_id) return 0;
+    for (i = 0; i < MN_DEVICE_ID_BYTES; ++i) value |= device_id[i];
+    return value != 0;
+}
+
+static int mn_is_device_paired(const mn_instance *instance,
+                               const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+    size_t i;
+    for (i = 0; i < instance->paired_device_count; ++i) {
+        if (memcmp(instance->paired_devices[i], device_id, MN_DEVICE_ID_BYTES) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void mn_emit_pairing_event(mn_instance *instance, mn_event_type type,
+                                  const mn_peer *peer, const char *message) {
+    mn_event event;
+    memset(&event, 0, sizeof(event));
+    event.type = type;
+    if (peer) {
+        event.player = peer->player;
+        memcpy(event.device_id, peer->device_id, MN_DEVICE_ID_BYTES);
+    }
+    mn_copy_text(event.text, sizeof(event.text), message);
+    mn_push_event(instance, &event);
+}
+
+static void mn_activate_peer(mn_instance *instance, mn_peer *peer) {
+    mn_event event;
+    if (!peer || (!peer->pending_approval && !peer->active)) return;
+    if (!mn_random_u64(&peer->token)) {
+        memset(peer, 0, sizeof(*peer));
+        mn_set_error(instance, "Secure random number generation failed");
+        return;
+    }
+    peer->id = instance->next_player_id++;
+    if (peer->id == 0) peer->id = instance->next_player_id++;
+    peer->pending_approval = 0;
+    peer->active = 1;
+    peer->player.id = peer->id;
+    peer->player.colour_rgba = 0xFFFFFFFFu;
+    peer->player.rotation.w = 1.0f;
+    mn_refresh_host_players(instance);
+    memset(&event, 0, sizeof(event));
+    event.type = MN_EVENT_PLAYER_JOINED;
+    event.player_id = peer->id;
+    event.player = peer->player;
+    memcpy(event.device_id, peer->device_id, MN_DEVICE_ID_BYTES);
+    mn_push_event(instance, &event);
+    mn_send_welcome(instance, peer);
+    mn_broadcast_snapshot(instance);
 }
 
 static void mn_remove_peer(mn_instance *instance, mn_peer *peer,
@@ -1289,10 +1463,12 @@ static void mn_handle_mdns_response(mn_instance *instance,
 
 static void mn_send_join(mn_instance *instance) {
     uint8_t packet[MN_MAX_DATAGRAM_SIZE];
-    uint8_t payload[MN_PLAYER_NAME_LENGTH];
+    uint8_t payload[MN_DEVICE_ID_BYTES + MN_PLAYER_NAME_LENGTH];
     size_t size;
-    memset(payload, 0, sizeof(payload));
-    mn_copy_text((char *)payload, sizeof(payload), instance->info.local_name);
+    memcpy(payload, instance->device_id, MN_DEVICE_ID_BYTES);
+    memset(payload + MN_DEVICE_ID_BYTES, 0, MN_PLAYER_NAME_LENGTH);
+    mn_copy_text((char *)(payload + MN_DEVICE_ID_BYTES),
+                 MN_PLAYER_NAME_LENGTH, instance->info.local_name);
     size = mn_make_packet(packet, MN_PKT_JOIN, instance->config.app_id,
                           0, payload, sizeof(payload));
     mn_send_to(instance, &instance->server, packet, size);
@@ -1741,6 +1917,31 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
     payload = packet + MN_HEADER_SIZE;
     payload_size = packet_size - MN_HEADER_SIZE;
 
+    if (type == MN_PKT_SECURE) {
+        uint8_t plaintext[MN_MAX_DATAGRAM_SIZE];
+        size_t ciphertext_size;
+        if (!instance->encryption_enabled || payload_size < MN_SECURE_OVERHEAD +
+            MN_HEADER_SIZE) return;
+        ciphertext_size = payload_size - MN_SECURE_OVERHEAD;
+        if (!mn_crypto_aes256gcm_decrypt(instance->room_key, payload,
+                                         packet, MN_HEADER_SIZE,
+                                         payload + MN_SECURE_NONCE_BYTES,
+                                         ciphertext_size,
+                                         payload + MN_SECURE_NONCE_BYTES + ciphertext_size,
+                                         plaintext))
+            return;
+        if (ciphertext_size < MN_HEADER_SIZE ||
+            mn_read_u32(plaintext) != MN_MAGIC ||
+            mn_read_u32(plaintext + 8u) != instance->config.app_id ||
+            plaintext[5] == MN_PKT_SECURE)
+            return;
+        if (!mn_accept_secure_nonce(instance, from, payload)) return;
+        mn_handle_packet(instance, plaintext, ciphertext_size, from);
+        return;
+    }
+    /* Once a room key is configured, reject every unauthenticated game packet. */
+    if (instance->encryption_enabled) return;
+
     if (type == MN_PKT_DISCOVER && payload_size == 0 &&
         instance->info.role == MN_ROLE_HOST &&
         instance->info.status == MN_STATUS_HOSTING) {
@@ -1754,53 +1955,63 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
     }
 
     if (instance->info.role == MN_ROLE_HOST) {
-        if (type == MN_PKT_JOIN && room_id == 0 && payload_size == MN_PLAYER_NAME_LENGTH) {
+        if (type == MN_PKT_JOIN && room_id == 0 &&
+            payload_size == MN_DEVICE_ID_BYTES + MN_PLAYER_NAME_LENGTH) {
             mn_peer *peer = mn_find_peer_address(instance, from);
+            const uint8_t *device_id = payload;
             uint8_t name[MN_PLAYER_NAME_LENGTH];
-            size_t i;
-            memcpy(name, payload, sizeof(name));
+            size_t i, occupied = 0;
+            memcpy(name, payload + MN_DEVICE_ID_BYTES, sizeof(name));
             name[sizeof(name) - 1] = '\0';
+            if (!mn_device_id_is_valid(device_id)) return;
             if (peer) {
                 peer->silence = 0.0f;
+                if (peer->pending_approval) return;
                 mn_send_welcome(instance, peer);
                 mn_send_snapshot_to(instance, from);
                 return;
             }
-            /* Apply the allow-list only to new admissions. Existing session
-               peers can repeat JOIN to recover from a lost WELCOME packet. */
+            /* The IPv4 allow-list is an independent network-level filter. */
             if (!mn_join_source_is_allowed(instance, from)) return;
             if (mn_active_player_count(instance) >= instance->info.max_players) return;
-            for (i = 0; i < MN_MAX_PLAYERS && instance->peers[i].active; ++i) { }
+            for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+                if (instance->peers[i].active || instance->peers[i].pending_approval)
+                    occupied++;
+                else if (i == MN_MAX_PLAYERS) break;
+            }
+            if (occupied >= (size_t)instance->info.max_players - 1u) return;
+            for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+                if (!instance->peers[i].active &&
+                    !instance->peers[i].pending_approval) break;
+            }
             if (i == MN_MAX_PLAYERS) return;
             peer = &instance->peers[i];
             memset(peer, 0, sizeof(*peer));
-            peer->active = 1;
-            peer->id = instance->next_player_id++;
             peer->address = *from;
-            peer->player.id = peer->id;
-            peer->player.colour_rgba = 0xFFFFFFFFu;
-            peer->player.rotation.w = 1.0f;
+            memcpy(peer->device_id, device_id, MN_DEVICE_ID_BYTES);
             memcpy(peer->player.name, name, sizeof(name));
             peer->player.name[MN_PLAYER_NAME_LENGTH - 1] = '\0';
-            if (!mn_random_u64(&peer->token)) {
-                memset(peer, 0, sizeof(*peer));
-                mn_set_error(instance, "Secure random number generation failed");
+            peer->player.colour_rgba = 0xFFFFFFFFu;
+            peer->player.rotation.w = 1.0f;
+            if (instance->pairing_required &&
+                !mn_is_device_paired(instance, device_id)) {
+                peer->pending_approval = 1;
+                mn_emit_pairing_event(instance, MN_EVENT_PAIRING_REQUEST,
+                                      peer, "A device is requesting to join this room");
                 return;
             }
-            instance->info.player_count = (uint8_t)mn_active_player_count(instance);
-            {
-                mn_event event;
-                memset(&event, 0, sizeof(event));
-                event.type = MN_EVENT_PLAYER_JOINED;
-                event.player_id = peer->id;
-                event.player = peer->player;
-                mn_push_event(instance, &event);
-            }
-
-
-
-            mn_send_welcome(instance, peer);
-            mn_broadcast_snapshot(instance);
+            mn_activate_peer(instance, peer);
+            return;
+        }
+        if (type == MN_PKT_PAIRING_DENIED && room_id == 0 &&
+            payload_size == 0 && instance->info.role == MN_ROLE_CLIENT &&
+            instance->info.status == MN_STATUS_CONNECTING &&
+            mn_same_address(from, &instance->server)) {
+            instance->info.role = MN_ROLE_NONE;
+            instance->info.status = MN_STATUS_OFFLINE;
+            instance->connect_elapsed = 0.0f;
+            mn_emit_simple_event(instance, MN_EVENT_PAIRING_REJECTED,
+                                 "The host rejected this device's pairing request", 0);
             return;
         }
         if (room_id != instance->info.room_id) return;
@@ -2022,6 +2233,15 @@ mn_instance *mn_create(const mn_config *config) {
         }
     }
 #endif
+    if (!mn_random_bytes(instance->device_id, sizeof(instance->device_id)) ||
+        !mn_random_bytes((uint8_t *)&instance->secure_nonce_prefix,
+                         sizeof(instance->secure_nonce_prefix))) {
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        free(instance);
+        return NULL;
+    }
     instance->socket = mn_open_socket(instance, 0);
     if (instance->socket == MN_BAD_SOCKET) {
 #ifdef _WIN32
@@ -2054,6 +2274,7 @@ void mn_destroy(mn_instance *instance) {
 #ifdef _WIN32
     WSACleanup();
 #endif
+    mn_secure_zero(instance->room_key, sizeof(instance->room_key));
     memset(instance, 0, sizeof(*instance));
     free(instance);
 }
@@ -2588,6 +2809,149 @@ void mn_clear_join_allowlist(mn_instance *instance) {
     instance->join_allowlist_count = 0;
 }
 
+int mn_get_device_id(const mn_instance *instance,
+                     uint8_t out_device_id[MN_DEVICE_ID_BYTES]) {
+    if (!instance || !out_device_id) return 0;
+    memcpy(out_device_id, instance->device_id, MN_DEVICE_ID_BYTES);
+    return 1;
+}
+
+int mn_set_device_id(mn_instance *instance,
+                     const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+    if (!instance || !instance->ready ||
+        instance->info.role != MN_ROLE_NONE ||
+        instance->info.status != MN_STATUS_OFFLINE ||
+        !mn_device_id_is_valid(device_id))
+        return 0;
+    memcpy(instance->device_id, device_id, MN_DEVICE_ID_BYTES);
+    return 1;
+}
+
+int mn_set_pairing_required(mn_instance *instance, int required) {
+    if (!instance || !instance->ready || (required != 0 && required != 1) ||
+        instance->info.role == MN_ROLE_CLIENT)
+        return 0;
+    instance->pairing_required = required;
+    return 1;
+}
+
+int mn_pair_device(mn_instance *instance,
+                   const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+    if (!instance || !instance->ready || !mn_device_id_is_valid(device_id)) return 0;
+    if (mn_is_device_paired(instance, device_id)) return 1;
+    if (instance->paired_device_count >= MN_MAX_PAIRED_DEVICES) return 0;
+    memcpy(instance->paired_devices[instance->paired_device_count],
+           device_id, MN_DEVICE_ID_BYTES);
+    instance->paired_device_count++;
+    return 1;
+}
+
+int mn_unpair_device(mn_instance *instance,
+                     const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+    size_t i;
+    if (!instance || !instance->ready || !mn_device_id_is_valid(device_id)) return 0;
+    for (i = 0; i < instance->paired_device_count; ++i) {
+        if (memcmp(instance->paired_devices[i], device_id, MN_DEVICE_ID_BYTES) == 0) {
+            size_t remaining = instance->paired_device_count - i - 1u;
+            if (remaining != 0u)
+                memmove(instance->paired_devices[i], instance->paired_devices[i + 1u],
+                        remaining * MN_DEVICE_ID_BYTES);
+            instance->paired_device_count--;
+            memset(instance->paired_devices[instance->paired_device_count], 0,
+                   MN_DEVICE_ID_BYTES);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void mn_clear_paired_devices(mn_instance *instance) {
+    if (!instance || !instance->ready) return;
+    memset(instance->paired_devices, 0, sizeof(instance->paired_devices));
+    instance->paired_device_count = 0;
+}
+
+int mn_approve_pairing(mn_instance *instance,
+                       const uint8_t device_id[MN_DEVICE_ID_BYTES],
+                       int approved) {
+    size_t i;
+    if (!instance || !instance->ready ||
+        instance->info.role != MN_ROLE_HOST ||
+        instance->info.status != MN_STATUS_HOSTING ||
+        (approved != 0 && approved != 1) ||
+        !mn_device_id_is_valid(device_id))
+        return 0;
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        mn_peer *peer = &instance->peers[i];
+        if (peer->pending_approval &&
+            memcmp(peer->device_id, device_id, MN_DEVICE_ID_BYTES) == 0) {
+            if (approved) {
+                if (!mn_pair_device(instance, device_id)) return 0;
+                mn_activate_peer(instance, peer);
+                mn_emit_pairing_event(instance, MN_EVENT_PAIRING_APPROVED,
+                                      peer, "Device paired and admitted to the room");
+            } else {
+                uint8_t deny_packet[MN_MAX_DATAGRAM_SIZE];
+                size_t deny_size = mn_make_packet(deny_packet, MN_PKT_PAIRING_DENIED,
+                                                  instance->config.app_id, 0, NULL, 0);
+                mn_send_to(instance, &peer->address, deny_packet, deny_size);
+                mn_emit_pairing_event(instance, MN_EVENT_PAIRING_REJECTED,
+                                      peer, "Pairing request rejected");
+                memset(peer, 0, sizeof(*peer));
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void mn_secure_zero(void *memory, size_t size) {
+    volatile uint8_t *bytes = (volatile uint8_t *)memory;
+    while (size--) *bytes++ = 0;
+}
+
+int mn_crypto_available(void) {
+    return mn_crypto_backend_available();
+}
+
+int mn_generate_room_key(uint8_t out_key[MN_ROOM_KEY_BYTES]) {
+    if (!out_key || !mn_crypto_backend_available()) return 0;
+    return mn_random_bytes(out_key, MN_ROOM_KEY_BYTES);
+}
+
+int mn_set_room_key(mn_instance *instance,
+                    const uint8_t room_key[MN_ROOM_KEY_BYTES]) {
+    size_t i;
+    uint8_t nonzero = 0;
+    uint32_t prefix;
+    if (!instance || !instance->ready || !room_key ||
+        !mn_crypto_backend_available() ||
+        instance->info.role != MN_ROLE_NONE ||
+        instance->info.status != MN_STATUS_OFFLINE)
+        return 0;
+    for (i = 0; i < MN_ROOM_KEY_BYTES; ++i) nonzero |= room_key[i];
+    if (!nonzero || !mn_random_bytes((uint8_t *)&prefix, sizeof(prefix))) return 0;
+    memcpy(instance->room_key, room_key, MN_ROOM_KEY_BYTES);
+    instance->secure_nonce_prefix = prefix;
+    instance->secure_nonce_counter = 0;
+    memset(instance->secure_replays, 0, sizeof(instance->secure_replays));
+    instance->secure_replay_age = 0;
+    instance->encryption_enabled = 1;
+    return 1;
+}
+
+void mn_clear_room_key(mn_instance *instance) {
+    if (!instance || !instance->ready ||
+        instance->info.role != MN_ROLE_NONE ||
+        instance->info.status != MN_STATUS_OFFLINE)
+        return;
+    mn_secure_zero(instance->room_key, sizeof(instance->room_key));
+    instance->encryption_enabled = 0;
+    instance->secure_nonce_counter = 0;
+    memset(instance->secure_replays, 0, sizeof(instance->secure_replays));
+    instance->secure_replay_age = 0;
+}
+
 void mn_get_info(const mn_instance *instance, mn_info *out_info) {
     if (instance && out_info) *out_info = instance->info;
 }
@@ -2864,17 +3228,24 @@ void mn_update(mn_instance *instance, float dt_seconds) {
 
     if (instance->info.role == MN_ROLE_HOST) {
         for (i = 0; i < MN_MAX_PLAYERS; ++i) {
-            if (instance->peers[i].active) {
-                instance->peers[i].silence += dt;
-                instance->peers[i].state_cooldown -= dt;
-                instance->peers[i].message_cooldown -= dt;
-                if (instance->peers[i].state_cooldown < 0.0f)
-                    instance->peers[i].state_cooldown = 0.0f;
-                if (instance->peers[i].message_cooldown < 0.0f)
-                    instance->peers[i].message_cooldown = 0.0f;
-                if (instance->peers[i].silence > instance->config.timeout_seconds) {
-                    mn_remove_peer(instance, &instance->peers[i], "Player timed out");
-                    mn_broadcast_snapshot(instance);
+            mn_peer *peer = &instance->peers[i];
+            if (peer->active || peer->pending_approval) {
+                peer->silence += dt;
+                if (peer->active) {
+                    peer->state_cooldown -= dt;
+                    peer->message_cooldown -= dt;
+                    if (peer->state_cooldown < 0.0f)
+                        peer->state_cooldown = 0.0f;
+                    if (peer->message_cooldown < 0.0f)
+                        peer->message_cooldown = 0.0f;
+                }
+                if (peer->silence > instance->config.timeout_seconds) {
+                    if (peer->active) {
+                        mn_remove_peer(instance, peer, "Player timed out");
+                        mn_broadcast_snapshot(instance);
+                    } else {
+                        memset(peer, 0, sizeof(*peer));
+                    }
                 }
             }
         }
