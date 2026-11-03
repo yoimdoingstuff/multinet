@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later */
 #include "multinet.h"
+#include "../src/multinet_crypto.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +29,21 @@ typedef struct test_state_validator_context {
     unsigned rejected_score_regressions;
     unsigned out_of_bounds_candidates;
 } test_state_validator_context;
+
+static int test_hmac_sha256_vector(void) {
+    static const uint8_t expected[32] = {
+        0xf7, 0xbc, 0x83, 0xf4, 0x30, 0x53, 0x84, 0x24,
+        0xb1, 0x32, 0x98, 0xe6, 0xaa, 0x6f, 0xb1, 0x43,
+        0xef, 0x4d, 0x59, 0xa1, 0x49, 0x46, 0x17, 0x59,
+        0x97, 0x47, 0x9d, 0xbc, 0x2d, 0x1a, 0x3c, 0xd8
+    };
+    static const uint8_t key[] = "key";
+    static const uint8_t message[] = "The quick brown fox jumps over the lazy dog";
+    uint8_t actual[32];
+    return mn_crypto_hmac_sha256(key, sizeof(key) - 1u, message,
+                                 sizeof(message) - 1u, actual) &&
+           memcmp(actual, expected, sizeof(expected)) == 0;
+}
 
 static int test_device_id_nonzero(const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
     size_t i;
@@ -67,6 +83,7 @@ int main(void) {
     mn_instance *auto_scanner = NULL;
     mn_instance *bad_key_scanner = NULL;
     mn_instance *rejected_client = NULL;
+    mn_instance *spoof_client = NULL;
     mn_config auto_config;
     mn_info auto_info;
     mn_room discovered_rooms[MN_MAX_ROOMS];
@@ -83,7 +100,13 @@ int main(void) {
     test_state_validator_context validator_context = {0u, 0u, 0u};
     uint8_t room_key[MN_ROOM_KEY_BYTES], wrong_room_key[MN_ROOM_KEY_BYTES];
     uint8_t client_device_id[MN_DEVICE_ID_BYTES], rejected_device_id[MN_DEVICE_ID_BYTES];
+    uint8_t client_device_secret[MN_DEVICE_SECRET_BYTES];
+    uint8_t spoof_device_secret[MN_DEVICE_SECRET_BYTES];
+    uint8_t stored_pair_secret[MN_DEVICE_SECRET_BYTES];
+    uint8_t restored_device_id[MN_DEVICE_ID_BYTES];
+    uint8_t restored_device_secret[MN_DEVICE_SECRET_BYTES];
     int pairing_request_seen = 0, rejection_request_seen = 0, rejection_received = 0;
+    int spoof_rejected = 0;
     mn_event event;
     int result = 0;
     int connected = 0, message_received = 0, host_message_received = 0;
@@ -108,10 +131,10 @@ int main(void) {
     CHECK(host != NULL && client != NULL && scanner != NULL &&
           bad_key_scanner != NULL && auto_scanner != NULL,
           "create independent host, client and discovery instances");
-    CHECK(mn_crypto_available() &&
+    CHECK(mn_crypto_available() && test_hmac_sha256_vector() &&
           mn_generate_room_key(room_key) &&
           mn_generate_room_key(wrong_room_key),
-          "AES-GCM backend and operating-system room-key generation are available");
+          "AES-GCM/HMAC backend and operating-system key generation pass known-answer tests");
     wrong_room_key[0] ^= 0xA5u;
     CHECK(mn_set_room_key(host, room_key) &&
           mn_set_room_key(client, room_key) &&
@@ -120,8 +143,10 @@ int main(void) {
           mn_set_room_key(bad_key_scanner, wrong_room_key),
           "configure authenticated encryption before opening the room");
     CHECK(mn_get_device_id(client, client_device_id) &&
-          test_device_id_nonzero(client_device_id),
-          "client receives a non-zero persistent device identifier");
+          mn_get_device_secret(client, client_device_secret) &&
+          test_device_id_nonzero(client_device_id) &&
+          test_device_id_nonzero(client_device_secret),
+          "client receives a non-zero persistent device ID and private secret");
     mn_player_state_limits_init(&state_limits);
     state_limits.max_abs_position = 100.0f;
     state_limits.max_abs_velocity = 20.0f;
@@ -273,10 +298,40 @@ int main(void) {
         if (client_info.status == MN_STATUS_CONNECTED) { connected = 1; break; }
         sleep_ms(5);
     }
-    CHECK(connected, "paired client receives welcome packet");
+    CHECK(connected, "paired client completes HMAC challenge and receives welcome packet");
     CHECK(mn_get_device_id(client, rejected_device_id) &&
-          memcmp(client_device_id, rejected_device_id, MN_DEVICE_ID_BYTES) == 0,
-          "device identifier remains stable through the connection lifecycle");
+          memcmp(client_device_id, rejected_device_id, MN_DEVICE_ID_BYTES) == 0 &&
+          mn_get_paired_device_secret(host, client_device_id, stored_pair_secret) &&
+          memcmp(stored_pair_secret, client_device_secret, MN_DEVICE_SECRET_BYTES) == 0,
+          "host stores the approved device secret against its persistent ID");
+
+    spoof_client = mn_create(&config);
+    CHECK(spoof_client != NULL &&
+          mn_get_device_secret(spoof_client, spoof_device_secret) &&
+          mn_set_room_key(spoof_client, room_key) &&
+          mn_set_device_identity(spoof_client, client_device_id, spoof_device_secret) &&
+          mn_join_from(spoof_client, loopback_interface.address,
+                       "127.0.0.1", config.port, "Spoof"),
+          "client with a cloned public ID but a different private secret attempts to join");
+    for (iteration = 0; iteration < 40 && !spoof_rejected; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(spoof_client, 0.01f);
+        while (mn_poll_event(spoof_client, &event)) {
+            if (event.type == MN_EVENT_PAIRING_REJECTED) spoof_rejected = 1;
+        }
+        sleep_ms(5);
+    }
+    mn_get_info(spoof_client, &rejected_info);
+    CHECK(spoof_rejected && rejected_info.status == MN_STATUS_OFFLINE,
+          "host refuses a cloned device ID with the wrong private secret");
+    CHECK(mn_set_device_identity(spoof_client, client_device_id,
+                                 client_device_secret) &&
+          mn_get_device_id(spoof_client, restored_device_id) &&
+          mn_get_device_secret(spoof_client, restored_device_secret) &&
+          memcmp(restored_device_id, client_device_id, MN_DEVICE_ID_BYTES) == 0 &&
+          memcmp(restored_device_secret, client_device_secret,
+                 MN_DEVICE_SECRET_BYTES) == 0,
+          "application can restore the original device identity after restart");
 
     rejected_client = mn_create(&config);
     CHECK(rejected_client != NULL &&
@@ -315,8 +370,11 @@ int main(void) {
           rejected_info.status == MN_STATUS_OFFLINE,
           "rejected device is notified without disturbing the approved client");
     CHECK(mn_unpair_device(host, client_device_id) &&
-          mn_pair_device(host, client_device_id),
-          "host can revoke and re-pair a stored device identifier");
+          mn_pair_device(host, client_device_id, client_device_secret) &&
+          mn_get_paired_device_secret(host, client_device_id, stored_pair_secret) &&
+          memcmp(stored_pair_secret, client_device_secret,
+                 MN_DEVICE_SECRET_BYTES) == 0,
+          "host can revoke, re-pair and restore the stored device credential");
     CHECK(mn_set_pairing_required(host, 0),
           "host can switch off approval prompts for this open test room");
 
@@ -650,6 +708,7 @@ int main(void) {
 cleanup:
     for (j = 0; j < extra_count; ++j) if (extra_clients[j]) mn_destroy(extra_clients[j]);
     if (rejected_client) mn_destroy(rejected_client);
+    if (spoof_client) mn_destroy(spoof_client);
     if (bad_key_scanner) mn_destroy(bad_key_scanner);
     if (auto_scanner) mn_destroy(auto_scanner);
     if (scanner) mn_destroy(scanner);
