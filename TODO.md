@@ -43,7 +43,7 @@
 - [ ] Publish a versioned release archive.
 - [ ] Add examples for a non-game chat/message app and a simple replicated 2D object.
 - [x] Add an optional Clang/libFuzzer target for malformed headers, lengths, room offers and player-state payloads.
-- [ ] Add Windows multi-process LAN manual test checklist.
+- [x] Document the Windows multi-process LAN manual test checklist (physical-device execution remains a release validation task).
 
 ## Explicit non-goals
 

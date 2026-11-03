@@ -67,6 +67,10 @@ MultiNet does not render or simulate balls. The game owns physics, interpolation
 
 The current implementation is intended to be called from one application thread. Do not call `mn_update()`, `mn_leave()` or state-mutating functions concurrently on the same instance. Multiple independent instances are supported, but each instance should have one owning thread. A registered state-validation callback is invoked by `mn_update()` on that same owning thread.
 
+## Physical Windows LAN testing
+
+Use [`docs/WINDOWS_LAN_TESTING.md`](WINDOWS_LAN_TESTING.md) for a step-by-step two-PC test plan covering discovery fallbacks, explicit adapters, admission filtering, reliable messages, ping and the 16-player limit. Automated loopback tests cannot replace these physical-network checks.
+
 ## Error handling
 
 Creation failure returns `NULL`. Most lifecycle methods return non-zero on success. `mn_get_info()` copies the most recent human-readable error to `last_error`; `MN_EVENT_ERROR` is also queued. Network send functions use UDP and cannot promise remote delivery merely because the local send call was accepted.
