@@ -29,6 +29,13 @@ typedef struct test_state_validator_context {
     unsigned out_of_bounds_candidates;
 } test_state_validator_context;
 
+static int test_device_id_nonzero(const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+    size_t i;
+    uint8_t value = 0;
+    for (i = 0; i < MN_DEVICE_ID_BYTES; ++i) value |= device_id[i];
+    return value != 0;
+}
+
 static int test_player_state_validator(const mn_player *previous,
                                        const mn_player *incoming,
                                        void *user_data) {
@@ -70,7 +77,7 @@ int main(void) {
     mn_info scanner_info;
     size_t interface_count, interface_index;
     int found_loopback = 0;
-    mn_info host_info, client_info;
+    mn_info host_info, client_info, rejected_info;
     mn_player state, received;
     mn_player_state_limits state_limits, invalid_state_limits;
     test_state_validator_context validator_context = {0u, 0u, 0u};
@@ -113,7 +120,7 @@ int main(void) {
           mn_set_room_key(bad_key_scanner, wrong_room_key),
           "configure authenticated encryption before opening the room");
     CHECK(mn_get_device_id(client, client_device_id) &&
-          mn_device_id_is_valid(client_device_id),
+          test_device_id_nonzero(client_device_id),
           "client receives a non-zero persistent device identifier");
     mn_player_state_limits_init(&state_limits);
     state_limits.max_abs_position = 100.0f;
@@ -303,8 +310,9 @@ int main(void) {
         sleep_ms(5);
     }
     mn_get_info(client, &client_info);
+    mn_get_info(rejected_client, &rejected_info);
     CHECK(rejection_received && mn_is_connected(client) &&
-          mn_get_info != NULL,
+          rejected_info.status == MN_STATUS_OFFLINE,
           "rejected device is notified without disturbing the approved client");
     CHECK(mn_unpair_device(host, client_device_id) &&
           mn_pair_device(host, client_device_id),
