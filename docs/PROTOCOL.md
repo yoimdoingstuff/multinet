@@ -27,13 +27,13 @@ The token is a basic session credential, not encryption. Traffic is not confiden
 
 ## Delivery and authority
 
-Player states are periodic snapshots. They are not individually acknowledged. Custom messages are best-effort UDP datagrams and may be lost, duplicated or reordered. Player-state updates and host snapshots include wrap-safe sequence numbers, and the host applies a simple per-peer state/message cooldown. Best-effort application messages remain unacknowledged. The reliable channel adds message IDs, ACK packets, bounded retransmission and duplicate suppression. A client-to-host reliable call confirms delivery to the host; the host then independently queues delivery to the other room members. Pending deliveries are held in a finite in-memory queue and are not persisted across disconnects or process restarts. Ping packets measure one outstanding round trip at a time and expire after five seconds.
+Player states are periodic snapshots. They are not individually acknowledged. Custom messages are best-effort UDP datagrams and may be lost, duplicated or reordered. Player-state updates and host snapshots include wrap-safe sequence numbers, and the host applies a simple per-peer state/message cooldown. Best-effort application messages remain unacknowledged. The reliable channel adds message IDs, ACK packets, bounded retransmission and duplicate suppression. Duplicate reliable packets are re-ACKed even during the ordinary message cooldown, and received message IDs are only remembered after the host has confirmed queue capacity. A client-to-host reliable call confirms delivery to the host; the host then independently queues delivery to the other room members. Pending deliveries are held in a finite in-memory queue and are not persisted across disconnects or process restarts. Applications can obtain the delivery ID from the extended send API and receive per-recipient acknowledged/failed events. Duplicate packets are re-ACKed even during the message cooldown; the receiver only records an ID as seen after it has capacity to accept the delivery. Ping packets measure one outstanding round trip at a time and expire after five seconds.
 
 The host relays client-reported player state. Game code must treat it as untrusted and independently validate speed, position, score changes, hole completion and any gameplay-affecting action. Cosmetic identifiers should never confer physics or visibility advantages.
 
 ## Network scope
 
-Discovery uses IPv4 subnet broadcast on the configured UDP port. Manual IPv4/hostname join is supported. There is no NAT traversal, public matchmaking, IPv6 transport, mDNS/DNS-SD, BLE/Wi-Fi Direct discovery, proxy, tunnel or multi-hop relay. Use only networks on which ordinary game traffic is permitted.
+Discovery supports IPv4 global/subnet broadcast, explicit-interface directed broadcast, directed unicast probes and DNS-SD/mDNS. Manual IPv4/hostname joining is supported. There is no NAT traversal, public matchmaking, IPv6 transport, raw BLE discovery, proxy, tunnel or multi-hop relay. Use only networks on which ordinary game traffic is permitted.
 
 ## Planned protocol hardening
 

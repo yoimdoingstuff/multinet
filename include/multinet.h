@@ -7,9 +7,9 @@
 extern "C" {
 #endif
 #define MN_VERSION_MAJOR 0
-#define MN_VERSION_MINOR 2
+#define MN_VERSION_MINOR 3
 #define MN_VERSION_PATCH 0
-#define MN_VERSION_STRING "0.2.0"
+#define MN_VERSION_STRING "0.3.0"
 #define MN_MAX_PLAYERS 16u
 #define MN_MAX_ROOMS 32u
 #define MN_PLAYER_NAME_LENGTH 24u
@@ -106,7 +106,9 @@ typedef enum mn_event_type {
     MN_EVENT_ROOM_FOUND,
     MN_EVENT_MATCH_STARTED,
     MN_EVENT_MESSAGE,
-    MN_EVENT_ERROR
+    MN_EVENT_ERROR,
+    MN_EVENT_MESSAGE_ACKNOWLEDGED,
+    MN_EVENT_MESSAGE_FAILED
 } mn_event_type;
 
 
@@ -140,6 +142,7 @@ typedef struct mn_event {
     mn_player player;
     uint8_t data[MN_MAX_MESSAGE_BYTES];
     char text[160];
+    uint32_t delivery_id; /* Reliable application-message ID, zero otherwise. */
 } mn_event;
 
 /* Populate config with documented defaults. */
@@ -206,6 +209,13 @@ int mn_send_message(mn_instance *instance, uint32_t target_player_id,
    Clients send to the host (target 0); hosts may target one player or broadcast. */
 int mn_send_reliable_message(mn_instance *instance, uint32_t target_player_id,
                              uint16_t channel, const void *data, size_t size);
+/* Extended form returns a delivery ID. Match it with MN_EVENT_MESSAGE_ACKNOWLEDGED
+   or MN_EVENT_MESSAGE_FAILED. On a host broadcast, each recipient is ACKed
+   independently and event.player_id identifies that recipient. Client-to-host
+   acknowledgement events use player_id 0 to identify the host. */
+int mn_send_reliable_message_ex(mn_instance *instance, uint32_t target_player_id,
+                                uint16_t channel, const void *data, size_t size,
+                                uint32_t *out_delivery_id);
 
 /* Convenience status helpers. */
 int mn_is_host(const mn_instance *instance);

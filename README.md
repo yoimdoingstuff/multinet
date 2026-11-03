@@ -13,7 +13,7 @@ It targets lightweight desktop games and tools. It has no engine or third-party 
 - Up to **16 players per room**, including the host.
 - Periodic player snapshots: position, rotation, velocity, score, flags, colour and four application-defined appearance IDs.
 - Host-controlled match start, and queued connection, room, player, match, message and error events.
-- Application-defined message channels with both best-effort and reliable acknowledged delivery, broadcast and host-to-player messaging.
+- Application-defined message channels with both best-effort and reliable acknowledged delivery, per-delivery IDs/events, broadcast and host-to-player messaging.
 - Non-blocking sockets, timeouts, per-session random join tokens, fixed-endian packet serialization, stale-packet sequence checks, ping/latency measurement and basic host-side state/message cooldowns.
 - Windows Winsock and POSIX socket backends; CMake build, installable static library, integration tests and interactive demo.
 
@@ -91,11 +91,11 @@ int main(void) {
 }
 ```
 
-See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
+Version 0.3 adds delivery-ID reporting and acknowledgement/failure events for reliable messages, including pending-delivery failures when a recipient leaves. See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
 
 ## Scope and limitations
 
-MultiNet currently supports ordinary IPv4 UDP over operating-system-provided interfaces. It can use Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN when those systems expose an IPv4 adapter. It does not implement raw Bluetooth RFCOMM/BLE or create/pair Wi-Fi Direct groups itself. IPv6, NAT traversal, public matchmaking, encryption, mDNS/DNS-SD, multi-hop relaying and covert tunnelling are not included. Player-state snapshots and `mn_send_message()` custom messages are best-effort UDP datagrams. `mn_send_reliable_message()` adds bounded acknowledgement/retry and duplicate suppression for application events, but it is not durable storage across disconnects. The host relays client-reported state; it is not an authoritative simulation or anti-cheat system. Treat all remote state as untrusted and validate it in the game.
+MultiNet currently supports ordinary IPv4 UDP over operating-system-provided interfaces. It can use Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN when those systems expose an IPv4 adapter. Discovery includes IPv4 broadcast, directed/unicast probing and DNS-SD/mDNS. It does not implement raw Bluetooth RFCOMM/BLE or create/pair Wi-Fi Direct groups itself. IPv6, NAT traversal, public matchmaking, encryption, multi-hop relaying and covert tunnelling are not included. Player-state snapshots and `mn_send_message()` custom messages are best-effort UDP datagrams. `mn_send_reliable_message()` adds bounded acknowledgement/retry and duplicate suppression for application events, but it is not durable storage across disconnects. The host relays client-reported state; it is not an authoritative simulation or anti-cheat system. Treat all remote state as untrusted and validate it in the game.
 
 ## License
 

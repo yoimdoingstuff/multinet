@@ -15,6 +15,8 @@
 - [x] Add packet sequence numbers and stale/out-of-order snapshot rejection.
 - [x] Add basic per-peer cooldown rate limits for state updates and application messages.
 - [x] Add a reliable message API with acknowledgement, retry and delivery IDs.
+- [x] Expose delivery IDs plus per-recipient acknowledgement/failure events to applications.
+- [x] Re-ACK duplicate reliable packets during cooldown and only remember accepted messages after queue capacity is reserved.
 - [ ] Validate peer-controlled state against configurable bounds and application callbacks.
 - [ ] Add an explicit allow-list / pairing flow for nearby devices.
 - [ ] Add optional encrypted and authenticated transport for untrusted networks.

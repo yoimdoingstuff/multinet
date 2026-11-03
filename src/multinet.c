@@ -53,7 +53,7 @@ typedef socklen_t mn_socklen;
 #define MN_PING_TIMEOUT_SECONDS 5.0f
 #define MN_MDNS_PORT 5353u
 #define MN_MDNS_MAX_PACKET 1400u
-#define MN_RELIABLE_SEEN_IDS 16u
+#define MN_RELIABLE_SEEN_IDS 64u
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(float) == 4, "MultiNet requires 32-bit floats");
@@ -154,6 +154,10 @@ struct mn_instance {
     size_t event_head;
     size_t event_count;
 };
+
+static void mn_emit_reliable_status(mn_instance *instance, mn_event_type type,
+                                    const mn_reliable_entry *entry,
+                                    uint32_t peer_id, const char *message);
 
 static void mn_copy_text(char *destination, size_t capacity, const char *source) {
     size_t length;
@@ -774,9 +778,13 @@ static void mn_remove_peer(mn_instance *instance, mn_peer *peer,
     {
         size_t i;
         for (i = 0; i < MN_MAX_RELIABLE_PENDING; ++i) {
-            if (instance->reliable[i].active &&
-                instance->reliable[i].peer_id == player_id)
-                memset(&instance->reliable[i], 0, sizeof(instance->reliable[i]));
+            mn_reliable_entry *entry = &instance->reliable[i];
+            if (entry->active && entry->peer_id == player_id) {
+                mn_emit_reliable_status(instance, MN_EVENT_MESSAGE_FAILED, entry,
+                                         player_id,
+                                         "Remote player left before delivery was acknowledged");
+                memset(entry, 0, sizeof(*entry));
+            }
         }
     }
     memset(peer, 0, sizeof(*peer));
@@ -1358,7 +1366,7 @@ static mn_reliable_entry *mn_find_reliable_slot(mn_instance *instance) {
 }
 
 static int mn_reliable_was_seen(mn_instance *instance, uint32_t sender_id,
-                                uint32_t message_id) {
+                                uint32_t message_id, int remember) {
     mn_seen_reliable *slot = NULL;
     mn_seen_reliable *free_slot = NULL;
     mn_seen_reliable *oldest = NULL;
@@ -1375,6 +1383,7 @@ static int mn_reliable_was_seen(mn_instance *instance, uint32_t sender_id,
             (!oldest || candidate->age < oldest->age)) oldest = candidate;
     }
     if (!slot) {
+        if (!remember) return 0;
         slot = free_slot ? free_slot : oldest;
         if (!slot) return 1;
         memset(slot, 0, sizeof(*slot));
@@ -1387,6 +1396,7 @@ static int mn_reliable_was_seen(mn_instance *instance, uint32_t sender_id,
             return 1;
         }
     }
+    if (!remember) return 0;
     slot->message_ids[slot->next] = message_id;
     slot->next = (uint8_t)((slot->next + 1u) % MN_RELIABLE_SEEN_IDS);
     if (slot->count < MN_RELIABLE_SEEN_IDS) slot->count++;
@@ -1473,14 +1483,32 @@ static void mn_send_reliable_ack_to_host(mn_instance *instance, uint32_t message
     mn_send_to(instance, &instance->server, packet, packet_size);
 }
 
+static void mn_emit_reliable_status(mn_instance *instance, mn_event_type type,
+                                    const mn_reliable_entry *entry,
+                                    uint32_t peer_id, const char *message) {
+    mn_event event;
+    if (!instance || !entry) return;
+    memset(&event, 0, sizeof(event));
+    event.type = type;
+    event.player_id = peer_id;
+    event.channel = entry->channel;
+    event.delivery_id = entry->message_id;
+    mn_copy_text(event.text, sizeof(event.text), message);
+    mn_push_event(instance, &event);
+}
+
 static void mn_remove_reliable_entry(mn_instance *instance, uint32_t peer_id,
                                      uint32_t message_id) {
     size_t i;
     for (i = 0; i < MN_MAX_RELIABLE_PENDING; ++i) {
         mn_reliable_entry *entry = &instance->reliable[i];
         if (entry->active && entry->peer_id == peer_id &&
-            entry->message_id == message_id)
+            entry->message_id == message_id) {
+            mn_emit_reliable_status(instance, MN_EVENT_MESSAGE_ACKNOWLEDGED,
+                                     entry, peer_id,
+                                     "Reliable delivery acknowledged");
             memset(entry, 0, sizeof(*entry));
+        }
     }
 }
 
@@ -1504,11 +1532,14 @@ static void mn_handle_host_reliable(mn_instance *instance, const uint8_t *payloa
     peer = mn_find_peer_token(instance, token);
     if (!peer || !mn_same_address(&peer->address, from) || sender_id != peer->id) return;
     if (target_id != 0) return;
-    if (peer->message_cooldown > 0.0f) return;
-    if (mn_reliable_was_seen(instance, peer->id, message_id)) {
+    if (mn_reliable_was_seen(instance, peer->id, message_id, 0)) {
+        /* An ACK may have been lost. Always re-ACK known deliveries, even
+           while the peer is inside the ordinary message rate-limit window. */
         mn_send_reliable_ack_to_peer(instance, from, message_id);
+        peer->silence = 0.0f;
         return;
     }
+    if (peer->message_cooldown > 0.0f) return;
     for (i = 0; i < MN_MAX_PLAYERS; ++i) {
         if (instance->peers[i].active && instance->peers[i].id != peer->id) needed++;
     }
@@ -1516,6 +1547,9 @@ static void mn_handle_host_reliable(mn_instance *instance, const uint8_t *payloa
         if (!instance->reliable[i].active) free_slots++;
     if (needed > free_slots) return;
 
+    /* Only remember the ID after capacity is available, otherwise a retry
+       could be ACKed even though this server never queued its fan-out. */
+    (void)mn_reliable_was_seen(instance, peer->id, message_id, 1);
     peer->message_cooldown = 0.08f;
     peer->silence = 0.0f;
     mn_send_reliable_ack_to_peer(instance, from, message_id);
@@ -1542,7 +1576,7 @@ static void mn_handle_client_reliable(mn_instance *instance, const uint8_t *payl
         payload_size != 16u + data_size) return;
     if (target_id != 0 && target_id != instance->info.local_player_id) return;
     mn_send_reliable_ack_to_host(instance, message_id);
-    if (mn_reliable_was_seen(instance, sender_id, message_id)) return;
+    if (mn_reliable_was_seen(instance, sender_id, message_id, 1)) return;
     mn_emit_message(instance, sender_id, channel, payload + 16, data_size);
 }
 
@@ -1988,6 +2022,18 @@ static int mn_host_internal(mn_instance *instance, const char *player_name,
     instance->ping_elapsed = 0.0f;
     instance->ping_pending_id = 0;
     instance->ping_pending_target = 0;
+    {
+        size_t reliable_index;
+        for (reliable_index = 0; reliable_index < MN_MAX_RELIABLE_PENDING;
+             ++reliable_index) {
+            mn_reliable_entry *entry = &instance->reliable[reliable_index];
+            if (entry->active) {
+                mn_emit_reliable_status(instance, MN_EVENT_MESSAGE_FAILED, entry,
+                                         entry->peer_id,
+                                         "Session ended before reliable delivery was acknowledged");
+            }
+        }
+    }
     memset(instance->reliable, 0, sizeof(instance->reliable));
     memset(instance->reliable_seen, 0, sizeof(instance->reliable_seen));
     instance->next_reliable_id = 0;
@@ -2438,6 +2484,7 @@ int mn_send_message(mn_instance *instance, uint32_t target_player_id,
     uint8_t packet[MN_MAX_DATAGRAM_SIZE];
     uint8_t payload[20u + MN_MAX_MESSAGE_BYTES];
     size_t packet_size;
+    if (out_delivery_id) *out_delivery_id = 0;
     if (!instance || !instance->ready || size > MN_MAX_MESSAGE_BYTES ||
         (size > 0 && !data)) return 0;
     if (instance->info.role == MN_ROLE_HOST && instance->info.status == MN_STATUS_HOSTING) {
@@ -2470,8 +2517,9 @@ int mn_send_message(mn_instance *instance, uint32_t target_player_id,
 }
 
 
-int mn_send_reliable_message(mn_instance *instance, uint32_t target_player_id,
-                             uint16_t channel, const void *data, size_t size) {
+int mn_send_reliable_message_ex(mn_instance *instance, uint32_t target_player_id,
+                                uint16_t channel, const void *data, size_t size,
+                                uint32_t *out_delivery_id) {
     uint32_t message_id;
     size_t i, needed = 0, free_slots = 0;
     if (!instance || !instance->ready || size > MN_MAX_MESSAGE_BYTES ||
@@ -2494,6 +2542,7 @@ int mn_send_reliable_message(mn_instance *instance, uint32_t target_player_id,
         instance->next_reliable_id++;
         if (instance->next_reliable_id == 0) instance->next_reliable_id++;
         message_id = instance->next_reliable_id;
+        if (out_delivery_id) *out_delivery_id = message_id;
         mn_emit_message(instance, instance->info.local_player_id, channel,
                         (const uint8_t *)data, size);
         for (i = 0; i < MN_MAX_PLAYERS; ++i) {
@@ -2516,11 +2565,18 @@ int mn_send_reliable_message(mn_instance *instance, uint32_t target_player_id,
     instance->next_reliable_id++;
     if (instance->next_reliable_id == 0) instance->next_reliable_id++;
     message_id = instance->next_reliable_id;
+    if (out_delivery_id) *out_delivery_id = message_id;
     if (!mn_queue_reliable_for_peer(instance, 0, instance->info.local_player_id,
                                     0, message_id, channel, data, size)) return 0;
     mn_emit_message(instance, instance->info.local_player_id, channel,
                     (const uint8_t *)data, size);
     return 1;
+}
+
+int mn_send_reliable_message(mn_instance *instance, uint32_t target_player_id,
+                             uint16_t channel, const void *data, size_t size) {
+    return mn_send_reliable_message_ex(instance, target_player_id, channel,
+                                       data, size, NULL);
 }
 
 
@@ -2650,6 +2706,10 @@ void mn_update(mn_instance *instance, float dt_seconds) {
                 (void)snprintf(error_text, sizeof(error_text),
                                "Reliable message %u to player %u was not acknowledged",
                                (unsigned)entry->message_id, (unsigned)entry->peer_id);
+                mn_emit_reliable_status(instance, MN_EVENT_MESSAGE_FAILED,
+                                         entry, entry->peer_id, error_text);
+                mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                             error_text);
                 mn_emit_simple_event(instance, MN_EVENT_ERROR, error_text, entry->peer_id);
                 memset(entry, 0, sizeof(*entry));
             } else {

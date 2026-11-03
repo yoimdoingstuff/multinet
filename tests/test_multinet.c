@@ -45,6 +45,10 @@ int main(void) {
     int result = 0;
     int connected = 0, message_received = 0, host_message_received = 0;
     int reliable_received = 0, reliable_host_received = 0;
+    int client_reliable_acked = 0, host_reliable_acked = 0;
+    int reliable_failed_on_leave = 0;
+    uint32_t client_reliable_id = 0, host_reliable_id = 0;
+    uint32_t cancelled_delivery_id = 0;
     int client_ping_received = 0, host_ping_received = 0;
     unsigned iteration;
     size_t extra_count = 0, j;
@@ -196,9 +200,11 @@ int main(void) {
 
     {
         static const char reliable_text[] = "reliable-client";
-        CHECK(mn_send_reliable_message(client, 0, 88, reliable_text,
-                                       sizeof(reliable_text) - 1),
-              "client queues a reliable message");
+        CHECK(mn_send_reliable_message_ex(client, 0, 88, reliable_text,
+                                          sizeof(reliable_text) - 1,
+                                          &client_reliable_id) &&
+              client_reliable_id != 0,
+              "client queues a reliable message and receives its delivery ID");
         for (iteration = 0; iteration < 60 && !reliable_received; ++iteration) {
             mn_update(client, 0.01f);
             mn_update(host, 0.01f);
@@ -211,14 +217,28 @@ int main(void) {
             sleep_ms(5);
         }
     }
-    CHECK(reliable_received, "host receives acknowledged client reliable message");
+    CHECK(reliable_received, "host receives client reliable message");
+
+    for (iteration = 0; iteration < 60 && !client_reliable_acked; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(client, 0.01f);
+        while (mn_poll_event(client, &event)) {
+            if (event.type == MN_EVENT_MESSAGE_ACKNOWLEDGED &&
+                event.delivery_id == client_reliable_id && event.player_id == 0)
+                client_reliable_acked = 1;
+        }
+        sleep_ms(5);
+    }
+    CHECK(client_reliable_acked,
+          "client receives an acknowledgement event for its delivery ID");
 
     {
         static const char reliable_text[] = "reliable-host";
         mn_get_info(client, &client_info);
-        CHECK(mn_send_reliable_message(host, client_info.local_player_id, 99,
-                                       reliable_text, sizeof(reliable_text) - 1),
-              "host queues a targeted reliable message");
+        CHECK(mn_send_reliable_message_ex(host, client_info.local_player_id, 99,
+                                          reliable_text, sizeof(reliable_text) - 1,
+                                          &host_reliable_id) && host_reliable_id != 0,
+              "host queues a targeted reliable message and receives its delivery ID");
         for (iteration = 0; iteration < 60 && !reliable_host_received; ++iteration) {
             mn_update(host, 0.01f);
             mn_update(client, 0.01f);
@@ -231,8 +251,21 @@ int main(void) {
             sleep_ms(5);
         }
     }
-    CHECK(reliable_host_received, "client receives acknowledged host reliable message");
+    CHECK(reliable_host_received, "client receives host reliable message");
 
+    for (iteration = 0; iteration < 60 && !host_reliable_acked; ++iteration) {
+        mn_update(client, 0.01f);
+        mn_update(host, 0.01f);
+        while (mn_poll_event(host, &event)) {
+            if (event.type == MN_EVENT_MESSAGE_ACKNOWLEDGED &&
+                event.delivery_id == host_reliable_id &&
+                event.player_id == client_info.local_player_id)
+                host_reliable_acked = 1;
+        }
+        sleep_ms(5);
+    }
+    CHECK(host_reliable_acked,
+          "host receives a per-player acknowledgement event for its delivery ID");
 
     CHECK(mn_ping(client, 0), "client starts a ping to the host");
     for (iteration = 0; iteration < 60 && !client_ping_received; ++iteration) {
@@ -303,11 +336,25 @@ int main(void) {
     }
 
     for (j = 0; j < extra_count; ++j) mn_leave(extra_clients[j]);
+    mn_get_info(client, &client_info);
+    CHECK(mn_send_reliable_message_ex(host, client_info.local_player_id, 112,
+                                      "cancel-on-leave", 15,
+                                      &cancelled_delivery_id) &&
+          cancelled_delivery_id != 0,
+          "host queues a reliable delivery before a peer leaves");
     mn_leave(client);
-    for (iteration = 0; iteration < 30; ++iteration) {
+    for (iteration = 0; iteration < 30 && !reliable_failed_on_leave; ++iteration) {
         mn_update(host, 0.01f);
+        while (mn_poll_event(host, &event)) {
+            if (event.type == MN_EVENT_MESSAGE_FAILED &&
+                event.delivery_id == cancelled_delivery_id &&
+                event.player_id == client_info.local_player_id)
+                reliable_failed_on_leave = 1;
+        }
         sleep_ms(5);
     }
+    CHECK(reliable_failed_on_leave,
+          "host reports pending reliable delivery failure when its recipient leaves");
     mn_get_info(host, &host_info);
     CHECK(host_info.player_count == 1, "host removes players who leave");
 
