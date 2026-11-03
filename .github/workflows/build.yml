@@ -83,4 +83,4 @@ jobs:
       - name: Build fuzz target
         run: cmake --build build-fuzz --parallel
       - name: Fuzz packet framing and player-state payloads
-        run: ./build-fuzz/multinet_packet_fuzzer -max_len=1472 -runs=3000
+        run: ./build-fuzz/multinet_packet_fuzzer -max_len=1472 -runs=10000

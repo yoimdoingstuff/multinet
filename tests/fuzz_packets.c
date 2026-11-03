@@ -44,9 +44,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     mn_instance framing_instance;
     mn_instance state_instance;
     struct sockaddr_in from;
+    uint8_t offer_payload[MN_OFFER_SIZE];
+    uint8_t offer_packet[MN_HEADER_SIZE + MN_OFFER_SIZE];
     uint8_t state_payload[12u + MN_WIRE_PLAYER_SIZE];
     uint8_t state_packet[MN_HEADER_SIZE + sizeof(state_payload)];
     size_t copied;
+    size_t offer_copied;
+    size_t offer_packet_size;
     size_t packet_size;
 
     if (size > MN_MAX_DATAGRAM_SIZE) return 0;
@@ -59,6 +63,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     mn_fuzz_init_instance(&framing_instance, MN_ROLE_NONE,
                           MN_STATUS_SEARCHING, NULL);
     mn_handle_packet(&framing_instance, data, size, &from);
+
+    /* Preserve a valid offer envelope while mutating its room and host names.
+       This covers the offer parser even when raw input has a broken header. */
+    memset(offer_payload, 0, sizeof(offer_payload));
+    offer_payload[0] = 1u;
+    offer_payload[1] = 2u;
+    offer_copied = size < sizeof(offer_payload) - 2u ?
+        size : sizeof(offer_payload) - 2u;
+    if (offer_copied != 0u && data != NULL)
+        memcpy(offer_payload + 2u, data, offer_copied);
+    offer_packet_size = mn_make_packet(offer_packet, MN_PKT_OFFER,
+                                       MN_DEFAULT_APP_ID, MN_FUZZ_ROOM_ID,
+                                       offer_payload, sizeof(offer_payload));
+    mn_handle_packet(&framing_instance, offer_packet, offer_packet_size, &from);
 
     /* Wrap arbitrary bytes in a valid authenticated state envelope. This
        reliably reaches the player decoder instead of requiring the fuzzer to
