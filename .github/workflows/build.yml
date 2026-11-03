@@ -24,6 +24,19 @@ jobs:
         run: |
           cmake --build build/installed-consumer --parallel
           ./build/installed-consumer/multinet_consumer
+      - name: Add metadata to distributable package
+        run: |
+          cmake -E copy README.md install/README.md
+          cmake -E copy TODO.md install/TODO.md
+          cmake -E copy docs/API.md install/API.md
+          cmake -E copy docs/CONNECTION_FALLBACKS.md install/CONNECTION_FALLBACKS.md
+      - name: Upload Linux library and demo artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MultiNet-linux-x64
+          path: install/
+          if-no-files-found: error
+          retention-days: 30
 
   windows:
     runs-on: windows-2022
@@ -44,3 +57,17 @@ jobs:
         run: |
           cmake --build build/installed-consumer --config Release --parallel
           .\build\installed-consumer\Release\multinet_consumer.exe
+      - name: Add metadata to distributable package
+        shell: pwsh
+        run: |
+          Copy-Item README.md install/README.md
+          Copy-Item TODO.md install/TODO.md
+          Copy-Item docs/API.md install/API.md
+          Copy-Item docs/CONNECTION_FALLBACKS.md install/CONNECTION_FALLBACKS.md
+      - name: Upload Windows library and demo artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MultiNet-windows-x64
+          path: install/
+          if-no-files-found: error
+          retention-days: 30
