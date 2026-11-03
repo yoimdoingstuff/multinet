@@ -951,14 +951,77 @@ static int mn_device_id_is_valid(const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
     return value != 0;
 }
 
-static int mn_is_device_paired(const mn_instance *instance,
-                               const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+static int mn_secure_equal(const uint8_t *left, const uint8_t *right,
+                            size_t size) {
+    uint8_t difference = 0;
+    size_t i;
+    if (!left || !right) return 0;
+    for (i = 0; i < size; ++i) difference |= (uint8_t)(left[i] ^ right[i]);
+    return difference == 0;
+}
+
+static int mn_device_secret_is_valid(
+    const uint8_t device_secret[MN_DEVICE_SECRET_BYTES]) {
+    size_t i;
+    uint8_t value = 0;
+    if (!device_secret) return 0;
+    for (i = 0; i < MN_DEVICE_SECRET_BYTES; ++i) value |= device_secret[i];
+    return value != 0;
+}
+
+static size_t mn_find_paired_device_index(
+    const mn_instance *instance,
+    const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
     size_t i;
     for (i = 0; i < instance->paired_device_count; ++i) {
         if (memcmp(instance->paired_devices[i], device_id, MN_DEVICE_ID_BYTES) == 0)
-            return 1;
+            return i;
     }
-    return 0;
+    return MN_MAX_PAIRED_DEVICES;
+}
+
+static int mn_is_device_paired(const mn_instance *instance,
+                               const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+    return mn_find_paired_device_index(instance, device_id) < MN_MAX_PAIRED_DEVICES;
+}
+
+static int mn_make_pairing_proof(
+    const uint8_t device_secret[MN_DEVICE_SECRET_BYTES],
+    const uint8_t device_id[MN_DEVICE_ID_BYTES],
+    const uint8_t challenge_nonce[32],
+    uint32_t room_id, uint32_t app_id, uint8_t proof[32]) {
+    uint8_t input[56];
+    if (!device_secret || !device_id || !challenge_nonce || !proof) return 0;
+    memcpy(input, challenge_nonce, 32u);
+    memcpy(input + 32u, device_id, MN_DEVICE_ID_BYTES);
+    mn_write_u32(input + 48u, room_id);
+    mn_write_u32(input + 52u, app_id);
+    return mn_crypto_hmac_sha256(device_secret, MN_DEVICE_SECRET_BYTES,
+                                 input, sizeof(input), proof);
+}
+
+static int mn_send_pairing_challenge(mn_instance *instance, mn_peer *peer) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[MN_DEVICE_ID_BYTES + 32u];
+    size_t packet_size;
+    if (!instance || !peer || !peer->pending_approval ||
+        !instance->encryption_enabled ||
+        !mn_device_secret_is_valid(peer->device_secret))
+        return 0;
+    if (!peer->challenge_pending) {
+        if (!mn_random_bytes(peer->challenge_nonce, sizeof(peer->challenge_nonce)))
+            return 0;
+        peer->challenge_pending = 1;
+    }
+    memcpy(payload, peer->device_id, MN_DEVICE_ID_BYTES);
+    memcpy(payload + MN_DEVICE_ID_BYTES, peer->challenge_nonce,
+           sizeof(peer->challenge_nonce));
+    packet_size = mn_make_packet(packet, MN_PKT_PAIRING_CHALLENGE,
+                                 instance->config.app_id, instance->info.room_id,
+                                 payload, sizeof(payload));
+    if (packet_size == 0) return 0;
+    mn_send_to(instance, &peer->address, packet, packet_size);
+    return 1;
 }
 
 static void mn_emit_pairing_event(mn_instance *instance, mn_event_type type,
@@ -1477,11 +1540,15 @@ static void mn_handle_mdns_response(mn_instance *instance,
 
 static void mn_send_join(mn_instance *instance) {
     uint8_t packet[MN_MAX_DATAGRAM_SIZE];
-    uint8_t payload[MN_DEVICE_ID_BYTES + MN_PLAYER_NAME_LENGTH];
+    uint8_t payload[MN_DEVICE_ID_BYTES + MN_DEVICE_SECRET_BYTES +
+                    MN_PLAYER_NAME_LENGTH];
     size_t size;
+    memset(payload, 0, sizeof(payload));
     memcpy(payload, instance->device_id, MN_DEVICE_ID_BYTES);
-    memset(payload + MN_DEVICE_ID_BYTES, 0, MN_PLAYER_NAME_LENGTH);
-    mn_copy_text((char *)(payload + MN_DEVICE_ID_BYTES),
+    if (instance->encryption_enabled)
+        memcpy(payload + MN_DEVICE_ID_BYTES, instance->device_secret,
+               MN_DEVICE_SECRET_BYTES);
+    mn_copy_text((char *)(payload + MN_DEVICE_ID_BYTES + MN_DEVICE_SECRET_BYTES),
                  MN_PLAYER_NAME_LENGTH, instance->info.local_name);
     size = mn_make_packet(packet, MN_PKT_JOIN, instance->config.app_id,
                           0, payload, sizeof(payload));
@@ -2839,33 +2906,69 @@ int mn_get_device_id(const mn_instance *instance,
     return 1;
 }
 
-int mn_set_device_id(mn_instance *instance,
-                     const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+int mn_get_device_secret(const mn_instance *instance,
+                         uint8_t out_secret[MN_DEVICE_SECRET_BYTES]) {
+    if (!instance || !out_secret) return 0;
+    memcpy(out_secret, instance->device_secret, MN_DEVICE_SECRET_BYTES);
+    return 1;
+}
+
+int mn_set_device_identity(mn_instance *instance,
+                           const uint8_t device_id[MN_DEVICE_ID_BYTES],
+                           const uint8_t device_secret[MN_DEVICE_SECRET_BYTES]) {
     if (!instance || !instance->ready ||
         instance->info.role != MN_ROLE_NONE ||
         instance->info.status != MN_STATUS_OFFLINE ||
-        !mn_device_id_is_valid(device_id))
+        !mn_device_id_is_valid(device_id) ||
+        !mn_device_secret_is_valid(device_secret))
         return 0;
     memcpy(instance->device_id, device_id, MN_DEVICE_ID_BYTES);
+    mn_secure_zero(instance->device_secret, sizeof(instance->device_secret));
+    memcpy(instance->device_secret, device_secret, MN_DEVICE_SECRET_BYTES);
     return 1;
 }
 
 int mn_set_pairing_required(mn_instance *instance, int required) {
     if (!instance || !instance->ready || (required != 0 && required != 1) ||
-        instance->info.role == MN_ROLE_CLIENT)
+        instance->info.role == MN_ROLE_CLIENT ||
+        (required && !instance->encryption_enabled))
         return 0;
     instance->pairing_required = required;
     return 1;
 }
 
 int mn_pair_device(mn_instance *instance,
-                   const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
-    if (!instance || !instance->ready || !mn_device_id_is_valid(device_id)) return 0;
-    if (mn_is_device_paired(instance, device_id)) return 1;
+                   const uint8_t device_id[MN_DEVICE_ID_BYTES],
+                   const uint8_t device_secret[MN_DEVICE_SECRET_BYTES]) {
+    size_t index;
+    if (!instance || !instance->ready || !instance->encryption_enabled ||
+        !mn_device_id_is_valid(device_id) ||
+        !mn_device_secret_is_valid(device_secret))
+        return 0;
+    index = mn_find_paired_device_index(instance, device_id);
+    if (index < MN_MAX_PAIRED_DEVICES) {
+        if (!mn_secure_equal(instance->paired_device_secrets[index],
+                             device_secret, MN_DEVICE_SECRET_BYTES))
+            return 0;
+        return 1;
+    }
     if (instance->paired_device_count >= MN_MAX_PAIRED_DEVICES) return 0;
-    memcpy(instance->paired_devices[instance->paired_device_count],
-           device_id, MN_DEVICE_ID_BYTES);
-    instance->paired_device_count++;
+    index = instance->paired_device_count++;
+    memcpy(instance->paired_devices[index], device_id, MN_DEVICE_ID_BYTES);
+    memcpy(instance->paired_device_secrets[index], device_secret,
+           MN_DEVICE_SECRET_BYTES);
+    return 1;
+}
+
+int mn_get_paired_device_secret(const mn_instance *instance,
+                                const uint8_t device_id[MN_DEVICE_ID_BYTES],
+                                uint8_t out_secret[MN_DEVICE_SECRET_BYTES]) {
+    size_t index;
+    if (!instance || !device_id || !out_secret) return 0;
+    index = mn_find_paired_device_index(instance, device_id);
+    if (index >= MN_MAX_PAIRED_DEVICES) return 0;
+    memcpy(out_secret, instance->paired_device_secrets[index],
+           MN_DEVICE_SECRET_BYTES);
     return 1;
 }
 
@@ -2946,7 +3049,7 @@ int mn_set_room_key(mn_instance *instance,
                     const uint8_t room_key[MN_ROOM_KEY_BYTES]) {
     size_t i;
     uint8_t nonzero = 0;
-    uint32_t prefix;
+    uint64_t prefix;
     if (!instance || !instance->ready || !room_key ||
         !mn_crypto_backend_available() ||
         instance->info.role != MN_ROLE_NONE ||
