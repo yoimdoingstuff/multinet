@@ -779,8 +779,11 @@ static void mn_send_to(mn_instance *instance, const struct sockaddr_in *to,
     }
     if (size < MN_HEADER_SIZE || data[5] == MN_PKT_SECURE ||
         size + MN_SECURE_OVERHEAD + 1u > MN_MAX_DATAGRAM_SIZE ||
-        instance->secure_nonce_counter == UINT32_MAX)
+        instance->secure_nonce_counter == UINT32_MAX) {
+        mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                     "Secure send rejected packet size/type/counter");
         return;
+    }
 
     inner_type = data[5];
     cipher_size = size - MN_HEADER_SIZE;
@@ -800,8 +803,13 @@ static void mn_send_to(mn_instance *instance, const struct sockaddr_in *to,
                                      aad, sizeof(aad),
                                      data + MN_HEADER_SIZE, cipher_size,
                                      secure_packet + MN_HEADER_SIZE + sizeof(nonce) + 1u,
-                                     secure_packet + MN_HEADER_SIZE + sizeof(nonce) + 1u + cipher_size))
+                                     secure_packet + MN_HEADER_SIZE + sizeof(nonce) + 1u + cipher_size)) {
+        mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                     "AES-GCM encrypt failed");
         return;
+    }
+    mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                 "Secure packet encrypted and sent");
     mn_send_raw_to(instance, to, secure_packet, secure_size);
 }
 
@@ -2003,8 +2011,14 @@ static void mn_handle_packet_internal(mn_instance *instance, const uint8_t *pack
         uint8_t aad[MN_HEADER_SIZE + 1u];
         uint8_t inner_type;
         size_t ciphertext_size, inner_size;
+        mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                     "Secure datagram received");
         if (!instance->encryption_enabled ||
-            payload_size < MN_SECURE_OVERHEAD + 1u) return;
+            payload_size < MN_SECURE_OVERHEAD + 1u) {
+            mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                         "Secure datagram rejected: key missing or too short");
+            return;
+        }
         inner_type = payload[MN_SECURE_NONCE_BYTES];
         if (inner_type == MN_PKT_SECURE) return;
         ciphertext_size = payload_size - MN_SECURE_OVERHEAD - 1u;
@@ -2017,9 +2031,18 @@ static void mn_handle_packet_internal(mn_instance *instance, const uint8_t *pack
                                          payload + MN_SECURE_NONCE_BYTES + 1u,
                                          ciphertext_size,
                                          payload + MN_SECURE_NONCE_BYTES + 1u + ciphertext_size,
-                                         plaintext + MN_HEADER_SIZE))
+                                         plaintext + MN_HEADER_SIZE)) {
+            mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                         "Secure datagram authentication/decryption failed");
             return;
-        if (!mn_accept_secure_nonce(instance, from, payload)) return;
+        }
+        if (!mn_accept_secure_nonce(instance, from, payload)) {
+            mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                         "Secure datagram rejected by replay window");
+            return;
+        }
+        mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                     "Secure datagram decrypted");
         /* Rebuild the authenticated inner header; only the payload is encrypted. */
         if (mn_make_packet(plaintext, inner_type, app_id, room_id, NULL,
                            ciphertext_size) != inner_size)
@@ -2033,11 +2056,15 @@ static void mn_handle_packet_internal(mn_instance *instance, const uint8_t *pack
     if (type == MN_PKT_DISCOVER && payload_size == 0 &&
         instance->info.role == MN_ROLE_HOST &&
         instance->info.status == MN_STATUS_HOSTING) {
+        mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                     "Authenticated DISCOVER processed");
         mn_send_offer(instance, from);
         return;
     }
     if (type == MN_PKT_OFFER && payload_size == MN_OFFER_SIZE &&
         instance->info.status == MN_STATUS_SEARCHING) {
+        mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error),
+                     "Authenticated OFFER processed");
         mn_add_room(instance, from, room_id, payload);
         return;
     }
