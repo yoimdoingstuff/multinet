@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(MultiNet VERSION 0.1.0 LANGUAGES C)
 
 include(CTest)
+include(CMakePackageConfigHelpers)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -61,9 +62,18 @@ if(BUILD_TESTING AND MULTINET_BUILD_TESTS)
 endif()
 
 install(TARGETS multinet EXPORT MultiNetTargets ARCHIVE DESTINATION lib)
-install(FILES
-    include/multinet.h
-    include/multinet_types.inc
-    include/multinet_api.inc
-    DESTINATION include)
+install(FILES include/multinet.h DESTINATION include)
 install(EXPORT MultiNetTargets NAMESPACE MultiNet:: DESTINATION lib/cmake/MultiNet)
+
+configure_package_config_file(
+    cmake/MultiNetConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/MultiNetConfig.cmake
+    INSTALL_DESTINATION lib/cmake/MultiNet)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/MultiNetConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/MultiNetConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/MultiNetConfigVersion.cmake
+    DESTINATION lib/cmake/MultiNet)

@@ -1,6 +1,6 @@
 # API guide
 
-The public interface is a C API in `include/multinet.h`. Include that header and link the `multinet` static library. Functions take an explicit `mn_instance *`; there is no process-global active room.
+The public interface is a C API in `include/multinet.h`. Include that header and link the `multinet` static library. Functions take an explicit `mn_instance *`; there is no process-global active room. After installation, consumers can use `find_package(MultiNet CONFIG REQUIRED)` and `target_link_libraries(your_app PRIVATE MultiNet::MultiNet)`.
 
 ## Instance setup
 

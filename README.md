@@ -38,7 +38,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The build produces `multinet` (static library), `multinet_demo` (interactive demo) and `multinet_tests` (loopback integration test). Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
+The build produces `multinet` (static library), `multinet_demo` (interactive demo) and `multinet_tests` (loopback integration test). Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
 
 ## Demo
 

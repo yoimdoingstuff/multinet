@@ -32,7 +32,8 @@
 ## Integration and packaging
 
 - [ ] Integrate this library into Golfgame and remove its duplicated `tg_network` implementation.
-- [ ] Add package-config generation and a versioned release archive.
+- [x] Add package-config generation and an installed-consumer CI test.
+- [ ] Publish a versioned release archive.
 - [ ] Add examples for a non-game chat/message app and a simple replicated 2D object.
 - [ ] Add fuzz tests for malformed headers, lengths and player-state payloads.
 - [ ] Add Windows multi-process LAN manual test checklist.

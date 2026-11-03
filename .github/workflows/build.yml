@@ -16,6 +16,14 @@ jobs:
         run: cmake --build build --parallel
       - name: Run loopback integration tests
         run: ctest --test-dir build --output-on-failure
+      - name: Install package
+        run: cmake --install build --prefix install
+      - name: Configure installed-package consumer
+        run: cmake -S tests/installed_consumer -B build/installed-consumer -DCMAKE_PREFIX_PATH=install
+      - name: Build and run installed-package consumer
+        run: |
+          cmake --build build/installed-consumer --parallel
+          ./build/installed-consumer/multinet_consumer
 
   windows:
     runs-on: windows-2022
@@ -27,3 +35,12 @@ jobs:
         run: cmake --build build --config Release --parallel
       - name: Run loopback integration tests
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Install package
+        run: cmake --install build --config Release --prefix install
+      - name: Configure installed-package consumer
+        run: cmake -S tests/installed_consumer -B build/installed-consumer -A x64 -DCMAKE_PREFIX_PATH=install
+      - name: Build and run installed-package consumer
+        shell: pwsh
+        run: |
+          cmake --build build/installed-consumer --config Release --parallel
+          .\build\installed-consumer\Release\multinet_consumer.exe
