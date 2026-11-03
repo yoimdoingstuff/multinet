@@ -2018,7 +2018,7 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             mn_activate_peer(instance, peer);
             return;
         }
-`        if (room_id != instance->info.room_id) return;
+        if (room_id != instance->info.room_id) return;
         if (type == MN_PKT_STATE && payload_size == 12u + MN_WIRE_PLAYER_SIZE) {
             uint64_t token = mn_read_u64(payload);
             uint32_t sequence = mn_read_u32(payload + 8);
