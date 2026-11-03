@@ -81,13 +81,18 @@ enum mn_packet_type {
     MN_PKT_PING,
     MN_PKT_PONG,
     MN_PKT_PAIRING_DENIED,
-    MN_PKT_SECURE
+    MN_PKT_SECURE,
+    MN_PKT_PAIRING_CHALLENGE,
+    MN_PKT_PAIRING_PROOF
 };
 
 typedef struct mn_peer {
     int active;
     int pending_approval;
+    int challenge_pending;
     uint8_t device_id[MN_DEVICE_ID_BYTES];
+    uint8_t device_secret[MN_DEVICE_SECRET_BYTES];
+    uint8_t challenge_nonce[32];
     uint32_t id;
     uint64_t token;
     float silence;
@@ -124,8 +129,8 @@ typedef struct mn_seen_reliable {
 typedef struct mn_secure_replay {
     int active;
     struct sockaddr_in address;
-    uint32_t nonce_prefix;
-    uint64_t highest_counter;
+    uint64_t nonce_prefix;
+    uint32_t highest_counter;
     uint64_t seen_window;
     uint32_t age;
 } mn_secure_replay;
@@ -144,13 +149,15 @@ struct mn_instance {
     size_t join_allowlist_count;
     char join_allowlist[MN_MAX_JOIN_ALLOWLIST][48];
     uint8_t device_id[MN_DEVICE_ID_BYTES];
+    uint8_t device_secret[MN_DEVICE_SECRET_BYTES];
     int pairing_required;
     size_t paired_device_count;
     uint8_t paired_devices[MN_MAX_PAIRED_DEVICES][MN_DEVICE_ID_BYTES];
+    uint8_t paired_device_secrets[MN_MAX_PAIRED_DEVICES][MN_DEVICE_SECRET_BYTES];
     int encryption_enabled;
     uint8_t room_key[MN_ROOM_KEY_BYTES];
-    uint32_t secure_nonce_prefix;
-    uint64_t secure_nonce_counter;
+    uint64_t secure_nonce_prefix;
+    uint32_t secure_nonce_counter;
     uint32_t secure_replay_age;
     mn_secure_replay secure_replays[MN_SECURE_REPLAY_CAPACITY];
     mn_player players[MN_MAX_PLAYERS];
@@ -772,14 +779,14 @@ static void mn_send_to(mn_instance *instance, const struct sockaddr_in *to,
     }
     if (size < MN_HEADER_SIZE || data[5] == MN_PKT_SECURE ||
         size + MN_SECURE_OVERHEAD + 1u > MN_MAX_DATAGRAM_SIZE ||
-        instance->secure_nonce_counter == UINT64_MAX)
+        instance->secure_nonce_counter == UINT32_MAX)
         return;
 
     inner_type = data[5];
     cipher_size = size - MN_HEADER_SIZE;
     instance->secure_nonce_counter++;
-    mn_write_u32(nonce, instance->secure_nonce_prefix);
-    mn_write_u64(nonce + 4u, instance->secure_nonce_counter);
+    mn_write_u64(nonce, instance->secure_nonce_prefix);
+    mn_write_u32(nonce + 8u, instance->secure_nonce_counter);
     secure_size = mn_make_packet(secure_packet, MN_PKT_SECURE,
                                  mn_read_u32(data + 8u),
                                  mn_read_u32(data + 12u), NULL,
@@ -801,8 +808,8 @@ static void mn_send_to(mn_instance *instance, const struct sockaddr_in *to,
 static int mn_accept_secure_nonce(mn_instance *instance,
                                   const struct sockaddr_in *from,
                                   const uint8_t nonce[MN_SECURE_NONCE_BYTES]) {
-    uint32_t prefix = mn_read_u32(nonce);
-    uint64_t counter = mn_read_u64(nonce + 4u);
+    uint64_t prefix = mn_read_u64(nonce);
+    uint32_t counter = mn_read_u32(nonce + 8u);
     mn_secure_replay *slot = NULL;
     size_t i;
     if (counter == 0) return 0;
@@ -838,11 +845,11 @@ static int mn_accept_secure_nonce(mn_instance *instance,
         return 1;
     }
     if (counter > slot->highest_counter) {
-        uint64_t shift = counter - slot->highest_counter;
-        slot->seen_window = shift >= 64u ? 1u : (slot->seen_window << (unsigned)shift) | 1u;
+        uint32_t shift = counter - slot->highest_counter;
+        slot->seen_window = shift >= 64u ? 1u : (slot->seen_window << shift) | 1u;
         slot->highest_counter = counter;
     } else {
-        uint64_t difference = slot->highest_counter - counter;
+        uint32_t difference = slot->highest_counter - counter;
         uint64_t bit;
         if (difference >= 64u) return 0;
         bit = (uint64_t)1u << (unsigned)difference;
@@ -2247,6 +2254,7 @@ mn_instance *mn_create(const mn_config *config) {
     }
 #endif
     if (!mn_random_bytes(instance->device_id, sizeof(instance->device_id)) ||
+        !mn_random_bytes(instance->device_secret, sizeof(instance->device_secret)) ||
         !mn_random_bytes((uint8_t *)&instance->secure_nonce_prefix,
                          sizeof(instance->secure_nonce_prefix))) {
 #ifdef _WIN32
@@ -2288,6 +2296,8 @@ void mn_destroy(mn_instance *instance) {
     WSACleanup();
 #endif
     mn_secure_zero(instance->room_key, sizeof(instance->room_key));
+    mn_secure_zero(instance->device_secret, sizeof(instance->device_secret));
+    mn_secure_zero(instance->paired_device_secrets, sizeof(instance->paired_device_secrets));
     memset(instance, 0, sizeof(*instance));
     free(instance);
 }

@@ -14,6 +14,7 @@ extern "C" {
 #define MN_MAX_ROOMS 32u
 #define MN_MAX_JOIN_ALLOWLIST 16u
 #define MN_DEVICE_ID_BYTES 16u
+#define MN_DEVICE_SECRET_BYTES 32u
 #define MN_ROOM_KEY_BYTES 32u
 #define MN_MAX_PAIRED_DEVICES 32u
 #define MN_PLAYER_NAME_LENGTH 24u
@@ -182,18 +183,25 @@ int mn_allow_join_ipv4(mn_instance *instance, const char *ipv4_address);
 int mn_disallow_join_ipv4(mn_instance *instance, const char *ipv4_address);
 void mn_clear_join_allowlist(mn_instance *instance);
 
-/* Each instance has a random 128-bit device ID. Save it in application
-   settings and restore it with mn_set_device_id() on the next launch. */
+/* Each instance has a random device ID and private secret. Persist both in
+   application settings and restore them together before joining a room. */
 int mn_get_device_id(const mn_instance *instance,
                      uint8_t out_device_id[MN_DEVICE_ID_BYTES]);
-int mn_set_device_id(mn_instance *instance,
-                     const uint8_t device_id[MN_DEVICE_ID_BYTES]);
+int mn_get_device_secret(const mn_instance *instance,
+                         uint8_t out_secret[MN_DEVICE_SECRET_BYTES]);
+int mn_set_device_identity(mn_instance *instance,
+                           const uint8_t device_id[MN_DEVICE_ID_BYTES],
+                           const uint8_t device_secret[MN_DEVICE_SECRET_BYTES]);
 /* Device pairing is separate from the optional IPv4 source allow-list.
    When required, unknown devices generate MN_EVENT_PAIRING_REQUEST and remain
    pending until mn_approve_pairing() accepts or rejects them. */
 int mn_set_pairing_required(mn_instance *instance, int required);
 int mn_pair_device(mn_instance *instance,
-                   const uint8_t device_id[MN_DEVICE_ID_BYTES]);
+                   const uint8_t device_id[MN_DEVICE_ID_BYTES],
+                   const uint8_t device_secret[MN_DEVICE_SECRET_BYTES]);
+int mn_get_paired_device_secret(const mn_instance *instance,
+                                const uint8_t device_id[MN_DEVICE_ID_BYTES],
+                                uint8_t out_secret[MN_DEVICE_SECRET_BYTES]);
 int mn_unpair_device(mn_instance *instance,
                      const uint8_t device_id[MN_DEVICE_ID_BYTES]);
 void mn_clear_paired_devices(mn_instance *instance);
