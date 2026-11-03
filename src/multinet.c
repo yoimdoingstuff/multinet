@@ -51,6 +51,8 @@ typedef socklen_t mn_socklen;
 #define MN_RELIABLE_RETRY_SECONDS 0.30f
 #define MN_RELIABLE_MAX_ATTEMPTS 8u
 #define MN_PING_TIMEOUT_SECONDS 5.0f
+#define MN_MDNS_PORT 5353u
+#define MN_MDNS_MAX_PACKET 1400u
 #define MN_RELIABLE_SEEN_IDS 16u
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
@@ -113,6 +115,7 @@ typedef struct mn_seen_reliable {
 struct mn_instance {
     int ready;
     mn_socket socket;
+    mn_socket mdns_socket;
     mn_config config;
     mn_info info;
     mn_player local_player;
@@ -124,6 +127,7 @@ struct mn_instance {
     struct sockaddr_in discovery_target;
     char bound_ipv4[48];
     int discovery_target_valid;
+    int discovery_mdns;
     uint64_t session_token;
     uint32_t next_player_id;
     uint16_t local_port;
@@ -325,6 +329,44 @@ static mn_socket mn_open_socket_on(mn_instance *instance, uint16_t port,
 
 static mn_socket mn_open_socket(mn_instance *instance, uint16_t port) {
     return mn_open_socket_on(instance, port, NULL);
+}
+
+
+static mn_socket mn_open_mdns_socket(mn_instance *instance) {
+    mn_socket socket_handle;
+    struct sockaddr_in address;
+    struct ip_mreq membership;
+    int reuse = 1;
+    int ttl = 255;
+    socket_handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_handle == MN_BAD_SOCKET) return MN_BAD_SOCKET;
+    (void)setsockopt(socket_handle, SOL_SOCKET, SO_REUSEADDR,
+                     (const char *)&reuse, (mn_socklen)sizeof(reuse));
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(MN_MDNS_PORT);
+    if (bind(socket_handle, (struct sockaddr *)&address,
+             (mn_socklen)sizeof(address)) != 0) {
+        mn_close_socket(socket_handle);
+        return MN_BAD_SOCKET;
+    }
+    memset(&membership, 0, sizeof(membership));
+    membership.imr_multiaddr.s_addr = inet_addr("224.0.0.251");
+    membership.imr_interface.s_addr = htonl(INADDR_ANY);
+    if (setsockopt(socket_handle, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+                   (const char *)&membership, (mn_socklen)sizeof(membership)) != 0) {
+        mn_close_socket(socket_handle);
+        return MN_BAD_SOCKET;
+    }
+    (void)setsockopt(socket_handle, IPPROTO_IP, IP_MULTICAST_TTL,
+                     (const char *)&ttl, (mn_socklen)sizeof(ttl));
+    if (!mn_set_nonblocking(socket_handle)) {
+        mn_close_socket(socket_handle);
+        return MN_BAD_SOCKET;
+    }
+    (void)instance;
+    return socket_handle;
 }
 
 static void mn_close_current_socket(mn_instance *instance) {
@@ -797,6 +839,374 @@ static void mn_send_discover(mn_instance *instance) {
     destination.sin_port = htons(instance->config.port);
     destination.sin_addr.s_addr = htonl(INADDR_BROADCAST);
     mn_send_discover_to(instance, &destination);
+}
+
+
+static int mn_dns_write_name(uint8_t *out, size_t capacity, size_t *offset,
+                             const char *name) {
+    const char *cursor = name;
+    if (!out || !offset || !name) return 0;
+    while (*cursor) {
+        const char *dot = strchr(cursor, '.');
+        size_t label_size = dot ? (size_t)(dot - cursor) : strlen(cursor);
+        if (label_size == 0) {
+            cursor = dot ? dot + 1 : cursor + label_size;
+            continue;
+        }
+        if (label_size > 63u || *offset + 1u + label_size >= capacity) return 0;
+        out[(*offset)++] = (uint8_t)label_size;
+        memcpy(out + *offset, cursor, label_size);
+        *offset += label_size;
+        if (!dot) break;
+        cursor = dot + 1;
+    }
+    if (*offset >= capacity) return 0;
+    out[(*offset)++] = 0;
+    return 1;
+}
+
+static int mn_dns_read_name(const uint8_t *packet, size_t packet_size,
+                            size_t *offset, char *out, size_t out_capacity) {
+    size_t cursor, consumed = 0, used = 0;
+    int jumped = 0;
+    unsigned hops = 0;
+    if (!packet || !offset || !out || out_capacity == 0 || *offset >= packet_size) return 0;
+    cursor = *offset;
+    out[0] = '\0';
+    for (;;) {
+        uint8_t length;
+        if (cursor >= packet_size || ++hops > 32u) return 0;
+        length = packet[cursor++];
+        if ((length & 0xC0u) == 0xC0u) {
+            uint16_t pointer;
+            if (cursor >= packet_size) return 0;
+            pointer = (uint16_t)(((uint16_t)(length & 0x3Fu) << 8) | packet[cursor++]);
+            if (pointer >= packet_size) return 0;
+            if (!jumped) consumed = cursor - *offset;
+            cursor = pointer;
+            jumped = 1;
+            continue;
+        }
+        if ((length & 0xC0u) != 0) return 0;
+        if (length == 0) {
+            if (!jumped) consumed = cursor - *offset;
+            *offset += consumed;
+            return 1;
+        }
+        if ((size_t)length > packet_size - cursor) return 0;
+        if (used && used + 1u >= out_capacity) return 0;
+        if (used) out[used++] = '.';
+        if (used + length >= out_capacity) return 0;
+        {
+            size_t i;
+            for (i = 0; i < length; ++i)
+                out[used++] = (char)packet[cursor + i];
+        }
+        out[used] = '\0';
+        cursor += length;
+    }
+}
+
+static int mn_dns_name_equal(const char *left, const char *right) {
+    size_t i;
+    if (!left || !right || strlen(left) != strlen(right)) return 0;
+    for (i = 0; left[i]; ++i)
+        if (tolower((unsigned char)left[i]) != tolower((unsigned char)right[i])) return 0;
+    return 1;
+}
+
+static int mn_dns_append_rr(uint8_t *packet, size_t capacity, size_t *offset,
+                            const char *owner, uint16_t type,
+                            const uint8_t *rdata, size_t rdata_size) {
+    if (!mn_dns_write_name(packet, capacity, offset, owner)) return 0;
+    if (*offset + 10u + rdata_size > capacity || rdata_size > 65535u) return 0;
+    mn_write_u16(packet + *offset, type); *offset += 2;
+    mn_write_u16(packet + *offset, 1u); *offset += 2;
+    mn_write_u32(packet + *offset, 120u); *offset += 4;
+    mn_write_u16(packet + *offset, (uint16_t)rdata_size); *offset += 2;
+    if (rdata_size) memcpy(packet + *offset, rdata, rdata_size);
+    *offset += rdata_size;
+    return 1;
+}
+
+static void mn_send_mdns_packet(mn_instance *instance,
+                                const struct sockaddr_in *destination,
+                                const uint8_t *packet, size_t packet_size) {
+    if (!instance || instance->mdns_socket == MN_BAD_SOCKET ||
+        !destination || !packet || packet_size == 0) return;
+#ifdef _WIN32
+    (void)sendto(instance->mdns_socket, (const char *)packet, (int)packet_size, 0,
+                 (const struct sockaddr *)destination, (int)sizeof(*destination));
+#else
+    (void)sendto(instance->mdns_socket, (const char *)packet, packet_size, 0,
+                 (const struct sockaddr *)destination, (socklen_t)sizeof(*destination));
+#endif
+}
+
+static void mn_send_mdns_query(mn_instance *instance) {
+    uint8_t packet[MN_MDNS_MAX_PACKET];
+    size_t offset = 12u;
+    struct sockaddr_in destination;
+    if (!instance || instance->mdns_socket == MN_BAD_SOCKET) return;
+    memset(packet, 0, sizeof(packet));
+    mn_write_u16(packet + 4, 1u); /* QDCOUNT */
+    if (!mn_dns_write_name(packet, sizeof(packet), &offset, "_multinet._udp.local")) return;
+    if (offset + 4u > sizeof(packet)) return;
+    mn_write_u16(packet + offset, 12u); offset += 2; /* PTR */
+    mn_write_u16(packet + offset, 0x8001u); offset += 2; /* IN, unicast response requested */
+    memset(&destination, 0, sizeof(destination));
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(MN_MDNS_PORT);
+    destination.sin_addr.s_addr = inet_addr("224.0.0.251");
+    mn_send_mdns_packet(instance, &destination, packet, offset);
+}
+
+static const char *mn_mdns_host_ipv4(const mn_instance *instance) {
+    static char selected[48];
+    mn_interface interfaces[64];
+    size_t count, i;
+    if (instance->bound_ipv4[0] &&
+        strcmp(instance->bound_ipv4, "0.0.0.0") != 0) return instance->bound_ipv4;
+    count = mn_get_interfaces(interfaces, 64);
+    for (i = 0; i < count && i < 64; ++i) {
+        if (interfaces[i].address[0] &&
+            interfaces[i].type != MN_INTERFACE_LOOPBACK) {
+            mn_copy_text(selected, sizeof(selected), interfaces[i].address);
+            return selected;
+        }
+    }
+    mn_copy_text(selected, sizeof(selected), "127.0.0.1");
+    return selected;
+}
+
+static void mn_send_mdns_announcement(mn_instance *instance,
+                                      const struct sockaddr_in *destination) {
+    uint8_t packet[MN_MDNS_MAX_PACKET];
+    uint8_t rdata[512];
+    char instance_name[96], host_target[96], item[128];
+    size_t offset = 12u, rd_offset, packet_size;
+    struct in_addr ipv4;
+    if (!instance || !destination || instance->info.role != MN_ROLE_HOST) return;
+    memset(packet, 0, sizeof(packet));
+    mn_write_u16(packet + 2, 0x8400u); /* response + authoritative */
+    mn_write_u16(packet + 6, 1u); /* ANCOUNT: PTR */
+    mn_write_u16(packet + 10, 3u); /* ARCOUNT: SRV, TXT, A */
+    (void)snprintf(instance_name, sizeof(instance_name), "mn-%u._multinet._udp.local",
+                   (unsigned)instance->info.room_id);
+    (void)snprintf(host_target, sizeof(host_target), "multinet-%u.local",
+                   (unsigned)instance->info.room_id);
+
+    /* PTR answer points to the advertised service instance. */
+    if (!mn_dns_write_name(packet, sizeof(packet), &offset, "_multinet._udp.local")) return;
+    mn_write_u16(packet + offset, 12u); offset += 2;
+    mn_write_u16(packet + offset, 1u); offset += 2;
+    mn_write_u32(packet + offset, 120u); offset += 4;
+    rd_offset = offset + 2u;
+    if (!mn_dns_write_name(packet, sizeof(packet), &rd_offset, instance_name)) return;
+    mn_write_u16(packet + offset, (uint16_t)(rd_offset - offset - 2u)); offset += 2;
+    offset = rd_offset;
+
+    /* SRV record points to the host's IPv4 A record. */
+    rd_offset = 0;
+    mn_write_u16(rdata + rd_offset, 0u); rd_offset += 2;
+    mn_write_u16(rdata + rd_offset, 0u); rd_offset += 2;
+    mn_write_u16(rdata + rd_offset, instance->config.port); rd_offset += 2;
+    if (!mn_dns_write_name(rdata, sizeof(rdata), &rd_offset, host_target)) return;
+    if (!mn_dns_append_rr(packet, sizeof(packet), &offset, instance_name,
+                          33u, rdata, rd_offset)) return;
+
+    /* TXT metadata makes the result usable without parsing the SRV instance label. */
+    rd_offset = 0;
+#define MN_MDNS_TXT(KEY, VALUE) do { \
+    (void)snprintf(item, sizeof(item), "%s=%s", KEY, VALUE); \
+    { size_t text_length = strlen(item); \
+      if (text_length > 120u || rd_offset + text_length + 1u > sizeof(rdata)) return; \
+      rdata[rd_offset++] = (uint8_t)text_length; \
+      memcpy(rdata + rd_offset, item, text_length); rd_offset += text_length; } \
+} while (0)
+    {
+        char number[24];
+        MN_MDNS_TXT("room", instance->info.room_name);
+        MN_MDNS_TXT("host", instance->info.local_name);
+        (void)snprintf(number, sizeof(number), "%u", (unsigned)instance->config.app_id);
+        MN_MDNS_TXT("appid", number);
+        (void)snprintf(number, sizeof(number), "%u", (unsigned)instance->info.room_id);
+        MN_MDNS_TXT("roomid", number);
+        (void)snprintf(number, sizeof(number), "%u", (unsigned)instance->info.player_count);
+        MN_MDNS_TXT("players", number);
+        (void)snprintf(number, sizeof(number), "%u", (unsigned)instance->info.max_players);
+        MN_MDNS_TXT("max", number);
+    }
+#undef MN_MDNS_TXT
+    if (!mn_dns_append_rr(packet, sizeof(packet), &offset, instance_name,
+                          16u, rdata, rd_offset)) return;
+
+    /* A record. The OS-selected interface is used unless the host is bound explicitly. */
+    if (inet_pton(AF_INET, mn_mdns_host_ipv4(instance), &ipv4) != 1) return;
+    if (!mn_dns_append_rr(packet, sizeof(packet), &offset, host_target,
+                          1u, (const uint8_t *)&ipv4.s_addr, 4u)) return;
+    packet_size = offset;
+    mn_send_mdns_packet(instance, destination, packet, packet_size);
+}
+
+static void mn_mdns_add_room(mn_instance *instance, const char *ip,
+                             uint16_t port, const char *room_name,
+                             const char *host_name, uint32_t app_id,
+                             uint32_t room_id, uint8_t players,
+                             uint8_t max_players) {
+    mn_room room;
+    size_t i;
+    if (!instance || !ip || !ip[0] || port == 0 || app_id != instance->config.app_id ||
+        room_id == 0 || players == 0 || max_players < 2 ||
+        max_players > MN_MAX_PLAYERS || players > max_players) return;
+    memset(&room, 0, sizeof(room));
+    mn_copy_text(room.address, sizeof(room.address), ip);
+    mn_copy_text(room.name, sizeof(room.name), room_name);
+    mn_copy_text(room.host_name, sizeof(room.host_name), host_name);
+    room.port = port;
+    room.app_id = app_id;
+    room.room_id = room_id;
+    room.player_count = players;
+    room.max_players = max_players;
+    for (i = 0; i < instance->room_count; ++i) {
+        if (instance->rooms[i].room_id == room_id &&
+            strcmp(instance->rooms[i].address, ip) == 0) {
+            instance->rooms[i] = room;
+            return;
+        }
+    }
+    if (instance->room_count >= MN_MAX_ROOMS) return;
+    instance->rooms[instance->room_count++] = room;
+    {
+        mn_event event;
+        memset(&event, 0, sizeof(event));
+        event.type = MN_EVENT_ROOM_FOUND;
+        mn_copy_text(event.text, sizeof(event.text), room.name);
+        mn_push_event(instance, &event);
+    }
+}
+
+static void mn_handle_mdns_query(mn_instance *instance,
+                                 const uint8_t *packet, size_t packet_size,
+                                 const struct sockaddr_in *from) {
+    uint16_t flags, questions;
+    size_t offset = 12u;
+    uint16_t q;
+    if (packet_size < 12u || instance->info.role != MN_ROLE_HOST ||
+        instance->info.status != MN_STATUS_HOSTING) return;
+    flags = mn_read_u16(packet + 2);
+    if (flags & 0x8000u) return; /* response */
+    questions = mn_read_u16(packet + 4);
+    for (q = 0; q < questions; ++q) {
+        char name[256];
+        uint16_t type, klass;
+        if (!mn_dns_read_name(packet, packet_size, &offset, name, sizeof(name)) ||
+            offset + 4u > packet_size) return;
+        type = mn_read_u16(packet + offset); offset += 2;
+        klass = (uint16_t)(mn_read_u16(packet + offset) & 0x7FFFu); offset += 2;
+        if (klass == 1u && (type == 12u || type == 255u) &&
+            mn_dns_name_equal(name, "_multinet._udp.local")) {
+            struct sockaddr_in reply = *from;
+            reply.sin_port = htons(MN_MDNS_PORT);
+            mn_send_mdns_announcement(instance, &reply);
+            return;
+        }
+    }
+}
+
+static void mn_handle_mdns_response(mn_instance *instance,
+                                    const uint8_t *packet, size_t packet_size) {
+    uint16_t flags, questions, answers, authorities, additional;
+    uint32_t app_id = 0, room_id = 0;
+    uint16_t service_port = 0;
+    uint8_t player_count = 0, max_players = 0;
+    char room_name[MN_ROOM_NAME_LENGTH] = "";
+    char host_name[MN_PLAYER_NAME_LENGTH] = "";
+    char ptr_instance_name[256] = "", srv_owner[256] = "", txt_owner[256] = "";
+    char target_name[256] = "", address_name[256] = "", ip[48] = "";
+    int found_service_ptr = 0;
+    size_t offset = 12u;
+    uint32_t record_count, r;
+    if (!instance || packet_size < 12u) return;
+    flags = mn_read_u16(packet + 2);
+    if (!(flags & 0x8000u)) return;
+    questions = mn_read_u16(packet + 4);
+    answers = mn_read_u16(packet + 6);
+    authorities = mn_read_u16(packet + 8);
+    additional = mn_read_u16(packet + 10);
+    for (r = 0; r < questions; ++r) {
+        char question_name[256];
+        if (!mn_dns_read_name(packet, packet_size, &offset, question_name,
+                              sizeof(question_name)) || offset + 4u > packet_size) return;
+        offset += 4u;
+    }
+    record_count = (uint32_t)answers + authorities + additional;
+    for (r = 0; r < record_count; ++r) {
+        char owner[256];
+        uint16_t type, klass, rdlength;
+        size_t data_offset, end_offset;
+        if (!mn_dns_read_name(packet, packet_size, &offset, owner, sizeof(owner)) ||
+            offset + 10u > packet_size) return;
+        type = mn_read_u16(packet + offset); offset += 2;
+        klass = (uint16_t)(mn_read_u16(packet + offset) & 0x7FFFu); offset += 2;
+        offset += 4u; /* TTL */
+        rdlength = mn_read_u16(packet + offset); offset += 2;
+        data_offset = offset;
+        end_offset = data_offset + rdlength;
+        if (end_offset > packet_size) return;
+        if (klass == 1u && type == 12u &&
+            mn_dns_name_equal(owner, "_multinet._udp.local")) {
+            size_t name_offset = data_offset;
+            if (!mn_dns_read_name(packet, packet_size, &name_offset,
+                                  ptr_instance_name, sizeof(ptr_instance_name))) return;
+            found_service_ptr = 1;
+        } else if (klass == 1u && type == 33u && rdlength >= 7u) {
+            size_t name_offset = data_offset + 6u;
+            mn_copy_text(srv_owner, sizeof(srv_owner), owner);
+            service_port = mn_read_u16(packet + data_offset + 4u);
+            if (!mn_dns_read_name(packet, packet_size, &name_offset,
+                                  target_name, sizeof(target_name))) return;
+        } else if (klass == 1u && type == 16u) {
+            size_t cursor = data_offset;
+            mn_copy_text(txt_owner, sizeof(txt_owner), owner);
+            while (cursor < end_offset) {
+                uint8_t text_length = packet[cursor++];
+                char field[160];
+                char *equals;
+                if ((size_t)text_length > end_offset - cursor) break;
+                if (text_length >= sizeof(field)) { cursor += text_length; continue; }
+                memcpy(field, packet + cursor, text_length);
+                field[text_length] = '\0';
+                cursor += text_length;
+                equals = strchr(field, '=');
+                if (!equals) continue;
+                *equals++ = '\0';
+                if (strcmp(field, "room") == 0) mn_copy_text(room_name, sizeof(room_name), equals);
+                else if (strcmp(field, "host") == 0) mn_copy_text(host_name, sizeof(host_name), equals);
+                else if (strcmp(field, "appid") == 0) app_id = (uint32_t)strtoul(equals, NULL, 10);
+                else if (strcmp(field, "roomid") == 0) room_id = (uint32_t)strtoul(equals, NULL, 10);
+                else if (strcmp(field, "players") == 0) player_count = (uint8_t)strtoul(equals, NULL, 10);
+                else if (strcmp(field, "max") == 0) max_players = (uint8_t)strtoul(equals, NULL, 10);
+            }
+        } else if (klass == 1u && type == 1u && rdlength == 4u) {
+            struct in_addr ipv4;
+            if (target_name[0] && mn_dns_name_equal(owner, target_name)) {
+                memcpy(&ipv4.s_addr, packet + data_offset, 4u);
+                if (inet_ntop(AF_INET, &ipv4, ip, sizeof(ip)))
+                    mn_copy_text(address_name, sizeof(address_name), owner);
+            }
+        }
+        offset = end_offset;
+    }
+    if (found_service_ptr && ptr_instance_name[0] && srv_owner[0] && txt_owner[0] &&
+        mn_dns_name_equal(ptr_instance_name, srv_owner) &&
+        mn_dns_name_equal(ptr_instance_name, txt_owner) &&
+        target_name[0] && address_name[0] &&
+        mn_dns_name_equal(target_name, address_name) &&
+        ip[0] && room_name[0]) {
+        mn_mdns_add_room(instance, ip, service_port, room_name, host_name,
+                         app_id, room_id, player_count, max_players);
+    }
 }
 
 static void mn_send_join(mn_instance *instance) {
@@ -1475,6 +1885,7 @@ mn_instance *mn_create(const mn_config *config) {
     if (instance->config.heartbeat_seconds <= 0.0f) instance->config.heartbeat_seconds = defaults.heartbeat_seconds;
     if (instance->config.timeout_seconds <= 0.0f) instance->config.timeout_seconds = defaults.timeout_seconds;
     instance->socket = MN_BAD_SOCKET;
+    instance->mdns_socket = MN_BAD_SOCKET;
 #ifdef _WIN32
     {
         WSADATA winsock_data;
@@ -1494,6 +1905,8 @@ mn_instance *mn_create(const mn_config *config) {
     }
 
 
+    instance->mdns_socket = mn_open_mdns_socket(instance);
+    instance->info.mdns_available = instance->mdns_socket != MN_BAD_SOCKET ? 1u : 0u;
     instance->ready = 1;
     instance->info.status = MN_STATUS_OFFLINE;
     instance->info.role = MN_ROLE_NONE;
@@ -1509,6 +1922,8 @@ void mn_destroy(mn_instance *instance) {
     if (!instance) return;
     mn_leave(instance);
     mn_close_current_socket(instance);
+    if (instance->mdns_socket != MN_BAD_SOCKET)
+        mn_close_socket(instance->mdns_socket);
 #ifdef _WIN32
     WSACleanup();
 #endif
@@ -1524,6 +1939,7 @@ static int mn_host_internal(mn_instance *instance, const char *player_name,
     if (!instance || !instance->ready) return 0;
     if (instance->info.role == MN_ROLE_HOST) mn_leave(instance);
     if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    instance->discovery_mdns = 0;
     max_players = max_players < 2 ? 2 : (max_players > MN_MAX_PLAYERS ? MN_MAX_PLAYERS : max_players);
     mn_close_current_socket(instance);
     new_socket = mn_open_socket_on(instance, instance->config.port, local_ipv4);
@@ -1612,8 +2028,34 @@ int mn_discover(mn_instance *instance) {
     instance->info.role = MN_ROLE_NONE;
     instance->info.status = MN_STATUS_SEARCHING;
     instance->info.last_error[0] = '\0';
+    instance->discovery_mdns = 0;
     instance->discovery_target_valid = 0;
     mn_send_discover(instance);
+    return 1;
+}
+
+
+int mn_discover_mdns(mn_instance *instance) {
+    if (!instance || !instance->ready) return 0;
+    if (instance->mdns_socket == MN_BAD_SOCKET) {
+        mn_set_error(instance, "mDNS is unavailable on this system or UDP port 5353 could not be bound");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_HOST) {
+        mn_set_error(instance, "Leave the hosted room before searching");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    instance->room_count = 0;
+    memset(instance->rooms, 0, sizeof(instance->rooms));
+    instance->discovery_left = instance->config.discovery_seconds;
+    instance->discovery_tick = 0.0f;
+    instance->discovery_target_valid = 0;
+    instance->discovery_mdns = 1;
+    instance->info.role = MN_ROLE_NONE;
+    instance->info.status = MN_STATUS_SEARCHING;
+    instance->info.last_error[0] = '\0';
+    mn_send_mdns_query(instance);
     return 1;
 }
 
@@ -1654,6 +2096,7 @@ int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname,
     instance->info.role = MN_ROLE_NONE;
     instance->info.status = MN_STATUS_SEARCHING;
     instance->info.last_error[0] = '\0';
+    instance->discovery_mdns = 0;
     instance->discovery_target = destination;
     instance->discovery_target_valid = 1;
     mn_send_discover_to(instance, &instance->discovery_target);
@@ -1693,6 +2136,7 @@ int mn_discover_on(mn_instance *instance, const mn_interface *network_interface)
     instance->info.role = MN_ROLE_NONE;
     instance->info.status = MN_STATUS_SEARCHING;
     instance->info.last_error[0] = '\0';
+    instance->discovery_mdns = 0;
     instance->discovery_target = destination;
     instance->discovery_target_valid = 1;
     mn_send_discover_to(instance, &instance->discovery_target);
@@ -1705,6 +2149,7 @@ void mn_stop_discovery(mn_instance *instance) {
     instance->info.role = MN_ROLE_NONE;
     instance->discovery_left = 0.0f;
     instance->discovery_target_valid = 0;
+    instance->discovery_mdns = 0;
 }
 
 size_t mn_get_rooms(const mn_instance *instance, mn_room *rooms, size_t capacity) {
@@ -1731,6 +2176,7 @@ static int mn_join_internal(mn_instance *instance, const char *host, uint16_t po
         return 0;
     }
     if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    instance->discovery_mdns = 0;
     if (!mn_rebind_socket(instance, local_ipv4)) {
         mn_set_error(instance, "Could not bind the client socket to the selected local interface");
         return 0;
@@ -1874,6 +2320,7 @@ void mn_leave(mn_instance *instance) {
     instance->last_snapshot_sequence = 0;
     instance->has_snapshot_sequence = 0;
     instance->discovery_target_valid = 0;
+    instance->discovery_mdns = 0;
     memset(&instance->discovery_target, 0, sizeof(instance->discovery_target));
     instance->room_count = 0;
     instance->discovery_left = 0.0f;
@@ -2028,6 +2475,22 @@ void mn_update(mn_instance *instance, float dt_seconds) {
     if (!mn_float_is_valid(dt) || dt < 0.0f) dt = 0.0f;
     if (dt > 0.25f) dt = 0.25f;
 
+    if (instance->mdns_socket != MN_BAD_SOCKET) {
+        for (;;) {
+            from_length = (mn_socklen)sizeof(from);
+            received = (int)recvfrom(instance->mdns_socket, (char *)packet,
+                                     (int)sizeof(packet), 0,
+                                     (struct sockaddr *)&from, &from_length);
+            if (received <= 0) break;
+            if ((size_t)received >= 12u) {
+                if (mn_read_u16(packet + 2) & 0x8000u)
+                    mn_handle_mdns_response(instance, packet, (size_t)received);
+                else
+                    mn_handle_mdns_query(instance, packet, (size_t)received, &from);
+            }
+        }
+    }
+
     for (;;) {
         from_length = (mn_socklen)sizeof(from);
         received = (int)recvfrom(instance->socket, (char *)packet,
@@ -2041,7 +2504,9 @@ void mn_update(mn_instance *instance, float dt_seconds) {
         instance->discovery_left -= dt;
         instance->discovery_tick -= dt;
         if (instance->discovery_left > 0.0f && instance->discovery_tick <= 0.0f) {
-            if (instance->discovery_target_valid)
+            if (instance->discovery_mdns)
+                mn_send_mdns_query(instance);
+            else if (instance->discovery_target_valid)
                 mn_send_discover_to(instance, &instance->discovery_target);
             else
                 mn_send_discover(instance);
@@ -2051,6 +2516,7 @@ void mn_update(mn_instance *instance, float dt_seconds) {
             instance->info.status = MN_STATUS_OFFLINE;
             instance->info.role = MN_ROLE_NONE;
             instance->discovery_target_valid = 0;
+            instance->discovery_mdns = 0;
             memset(&instance->discovery_target, 0, sizeof(instance->discovery_target));
         }
     }

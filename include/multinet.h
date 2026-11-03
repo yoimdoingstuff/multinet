@@ -7,9 +7,9 @@
 extern "C" {
 #endif
 #define MN_VERSION_MAJOR 0
-#define MN_VERSION_MINOR 1
+#define MN_VERSION_MINOR 2
 #define MN_VERSION_PATCH 0
-#define MN_VERSION_STRING "0.1.0"
+#define MN_VERSION_STRING "0.2.0"
 #define MN_MAX_PLAYERS 16u
 #define MN_MAX_ROOMS 32u
 #define MN_PLAYER_NAME_LENGTH 24u
@@ -84,6 +84,7 @@ typedef struct mn_info {
     float ping_ms;
     uint8_t ping_available;
     uint8_t ping_pending;
+    uint8_t mdns_available;
 } mn_info;
 
 typedef struct mn_config {
@@ -158,6 +159,8 @@ int mn_host_on(mn_instance *instance, const char *player_name,
                const char *room_name, uint8_t max_players,
                const char *local_ipv4);
 int mn_discover(mn_instance *instance);
+/* DNS-SD/mDNS service discovery on the local link. */
+int mn_discover_mdns(mn_instance *instance);
 /* Unicast discovery fallback for networks where broadcast is filtered. */
 int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname, uint16_t port);
 /* Enumerate OS-managed IPv4 interfaces. Returns the total available count. */

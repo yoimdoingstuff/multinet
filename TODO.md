@@ -23,7 +23,7 @@
 
 - [x] Add directed/unicast room discovery as a fallback when LAN broadcast is filtered.
 
-- [ ] Add standards-based mDNS/DNS-SD discovery.
+- [x] Add DNS-SD/mDNS service discovery as another LAN room-discovery fallback.
 - [ ] Add discovery tests across isolated local interfaces where CI permits.
 - [x] Add basic client-to-host and host-to-client ping/latency measurement.
 - [x] Enumerate OS IPv4 adapters and support explicit binding for Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP interfaces.

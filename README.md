@@ -9,7 +9,7 @@ It targets lightweight desktop games and tools. It has no engine or third-party 
 - Independent `mn_instance` objects. One process can host a room and connect multiple local test clients.
 - UDP host/client rooms, configurable port and application ID.
 - OS interface enumeration and explicit interface binding for Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP links.
-- IPv4 LAN broadcast discovery, retrying directed/unicast discovery when broadcasts are filtered, and manual IPv4/hostname joining as a final fallback.
+- IPv4 LAN broadcast discovery, DNS-SD/mDNS service discovery, retrying directed/unicast discovery when broadcasts are filtered, and manual IPv4/hostname joining as a final fallback.
 - Up to **16 players per room**, including the host.
 - Periodic player snapshots: position, rotation, velocity, score, flags, colour and four application-defined appearance IDs.
 - Host-controlled match start, and queued connection, room, player, match, message and error events.
@@ -57,7 +57,7 @@ Join from the second terminal:
 
 For another PC on the same permitted LAN, replace `127.0.0.1` with the host PC's local IPv4 address. The default UDP port is `27890`; the host firewall may need to allow it. The demo does not tunnel traffic or bypass network restrictions.
 
-Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. Use `./build/multinet_demo interfaces` to list local IPv4 adapters. `./build/multinet_demo host-on 192.168.1.20 Alice` and `./build/multinet_demo join-from 192.168.1.30 192.168.1.20 Bob` bind each side to a chosen interface; `./build/multinet_demo scan-on 192.168.1.30` scans through that adapter. Discover nearby rooms with `./build/multinet_demo scan`. When broadcast discovery is filtered, probe a known host directly with `./build/multinet_demo scan 27890 192.168.1.10`, or skip discovery and join directly with `./build/multinet_demo join 192.168.1.10 Bob`. Host, join and scan accept custom UDP ports.
+Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. Use `./build/multinet_demo interfaces` to list local IPv4 adapters. Use `./build/multinet_demo scan-mdns` to discover rooms through DNS-SD/mDNS when the local network supports multicast. `./build/multinet_demo host-on 192.168.1.20 Alice` and `./build/multinet_demo join-from 192.168.1.30 192.168.1.20 Bob` bind each side to a chosen interface; `./build/multinet_demo scan-on 192.168.1.30` scans through that adapter. Discover nearby rooms with `./build/multinet_demo scan`. When broadcast discovery is filtered, probe a known host directly with `./build/multinet_demo scan 27890 192.168.1.10`, or skip discovery and join directly with `./build/multinet_demo join 192.168.1.10 Bob`. Host, join and scan accept custom UDP ports.
 
 The loopback integration test exercises independent instances, player replication, ID lookup, messages in both directions, match start, the full 16-player limit and player departure. This is not a substitute for testing two physical Windows PCs over a real LAN.
 

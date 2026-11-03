@@ -77,6 +77,7 @@ static void print_usage(const char *executable) {
     printf("  %s join <ipv4-or-hostname> <player-name> [port]\n", executable);
     printf("  %s join-from <local-ipv4> <host-address> <player-name> [port]\n", executable);
     printf("  %s scan [port] [host-address]\n", executable);
+    printf("  %s scan-mdns [port]\n", executable);
     printf("  %s scan-on <local-ipv4> [port]\n\n", executable);
     printf("Host and join run the live demo. Open two terminals and join 127.0.0.1\n");
     printf("to test on one PC, or use the host PC's LAN address from another PC.\n");
@@ -183,7 +184,7 @@ static void drain_events(mn_instance *network) {
 }
 
 static int run_scan(const mn_config *config, const char *target_host,
-                    const char *local_ipv4) {
+                    const char *local_ipv4, int use_mdns) {
     mn_instance *network = mn_create(config);
     double start, previous;
     if (!network) {
@@ -201,6 +202,8 @@ static int run_scan(const mn_config *config, const char *target_host,
                 return 1;
             }
             started = mn_discover_on(network, &selected_interface);
+        } else if (use_mdns) {
+            started = mn_discover_mdns(network);
         } else if (target_host) {
             started = mn_discover_at(network, target_host, config->port);
         } else {
@@ -215,7 +218,8 @@ static int run_scan(const mn_config *config, const char *target_host,
         }
     }
     printf("Searching %s for MultiNet rooms on UDP port %u...\n",
-           local_ipv4 ? local_ipv4 : (target_host ? target_host : "the local network"),
+           use_mdns ? "mDNS/DNS-SD" :
+           (local_ipv4 ? local_ipv4 : (target_host ? target_host : "the local network")),
            (unsigned)config->port);
     start = monotonic_seconds();
     previous = start;
@@ -343,11 +347,15 @@ int main(int argc, char **argv) {
     mn_config_init(&config);
     if (strcmp(argv[1], "scan") == 0) {
         config.port = argc >= 3 ? parse_port(argv[2], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
-        return run_scan(&config, argc >= 4 ? argv[3] : NULL, NULL);
+        return run_scan(&config, argc >= 4 ? argv[3] : NULL, NULL, 0);
     }
     if (strcmp(argv[1], "scan-on") == 0 && argc >= 3) {
         config.port = argc >= 4 ? parse_port(argv[3], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
-        return run_scan(&config, NULL, argv[2]);
+        return run_scan(&config, NULL, argv[2], 0);
+    }
+    if (strcmp(argv[1], "scan-mdns") == 0) {
+        config.port = argc >= 3 ? parse_port(argv[2], MN_DEFAULT_PORT) : MN_DEFAULT_PORT;
+        return run_scan(&config, NULL, NULL, 1);
     }
     if (strcmp(argv[1], "interfaces") == 0) {
         print_interfaces();

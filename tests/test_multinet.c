@@ -33,6 +33,7 @@ int main(void) {
     mn_instance *extra_clients[MN_MAX_PLAYERS - 2u] = {0};
     mn_interface interfaces[64];
     mn_interface loopback_interface;
+    mn_info scanner_info;
     size_t interface_count, interface_index;
     int found_loopback = 0;
     mn_info host_info, client_info;
@@ -83,6 +84,24 @@ int main(void) {
     CHECK(discovered_count == 1 &&
           strcmp(discovered_rooms[0].name, "Local Test") == 0,
           "unicast discovery finds room without LAN broadcast");
+
+    mn_get_info(scanner, &scanner_info);
+    if (scanner_info.mdns_available) {
+        CHECK(mn_discover_mdns(scanner), "start DNS-SD/mDNS room discovery");
+        for (iteration = 0; iteration < 40; ++iteration) {
+            mn_update(host, 0.01f);
+            mn_update(scanner, 0.01f);
+            (void)mn_get_rooms(scanner, discovered_rooms, MN_MAX_ROOMS);
+            sleep_ms(5);
+        }
+        mn_stop_discovery(scanner);
+        mn_get_info(scanner, &scanner_info);
+        CHECK(scanner_info.status == MN_STATUS_OFFLINE,
+              "mDNS discovery can be stopped cleanly");
+    } else {
+        CHECK(!mn_discover_mdns(scanner),
+              "mDNS reports unavailable cleanly while direct IP fallback remains usable");
+    }
 
     CHECK(mn_join_from(client, loopback_interface.address, "127.0.0.1",
                        config.port, "Client"),
