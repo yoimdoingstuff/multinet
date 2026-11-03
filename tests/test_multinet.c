@@ -42,7 +42,9 @@ static int test_aes256gcm_vector(void) {
         0xd0, 0xd1, 0xc8, 0xa7, 0x99, 0x99, 0x6b, 0xf0,
         0x26, 0x5b, 0x98, 0xb5, 0xd4, 0x8a, 0xb9, 0x19
     };
+    static const uint8_t aad[] = "secure-discovery-header";
     uint8_t ciphertext[16], tag[16], recovered[16], bad_tag[16];
+    uint8_t empty_ciphertext[1], empty_tag[16], empty_plaintext[1];
     if (!mn_crypto_aes256gcm_encrypt(key, nonce, NULL, 0,
                                      plaintext, sizeof(plaintext),
                                      ciphertext, tag))
@@ -57,9 +59,21 @@ static int test_aes256gcm_vector(void) {
         return 0;
     memcpy(bad_tag, tag, sizeof(tag));
     bad_tag[0] ^= 0x01u;
-    return !mn_crypto_aes256gcm_decrypt(key, nonce, NULL, 0,
-                                        ciphertext, sizeof(ciphertext), bad_tag,
-                                        recovered);
+    if (mn_crypto_aes256gcm_decrypt(key, nonce, NULL, 0,
+                                    ciphertext, sizeof(ciphertext), bad_tag,
+                                    recovered))
+        return 0;
+    if (!mn_crypto_aes256gcm_encrypt(key, nonce, aad, sizeof(aad) - 1u,
+                                     NULL, 0, empty_ciphertext, empty_tag))
+        return 0;
+    if (!mn_crypto_aes256gcm_decrypt(key, nonce, aad, sizeof(aad) - 1u,
+                                     empty_ciphertext, 0, empty_tag,
+                                     empty_plaintext))
+        return 0;
+    empty_tag[0] ^= 0x80u;
+    return !mn_crypto_aes256gcm_decrypt(key, nonce, aad, sizeof(aad) - 1u,
+                                        empty_ciphertext, 0, empty_tag,
+                                        empty_plaintext);
 }
 
 static int test_hmac_sha256_vector(void) {
@@ -259,10 +273,9 @@ int main(void) {
     }
     if (discovered_count != 1) {
         mn_get_info(scanner, &scanner_info);
-        mn_get_info(host, &host_info);
-        fprintf(stderr, "DIAG: secure discovery rooms=%u status=%u scanner='%s' host='%s'\n",
+        fprintf(stderr, "DIAG: secure discovery rooms=%u status=%u scanner last_error='%s'\n",
                 (unsigned)discovered_count, (unsigned)scanner_info.status,
-                scanner_info.last_error, host_info.last_error);
+                scanner_info.last_error);
     }
     CHECK(discovered_count == 1 &&
           strcmp(discovered_rooms[0].name, "Local Test") == 0,

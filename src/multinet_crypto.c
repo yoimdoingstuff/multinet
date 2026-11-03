@@ -20,6 +20,11 @@ static int mn_bcrypt_crypt(int encrypt, const uint8_t key_bytes[32],
     DWORD object_size = 0, result_size = 0;
     NTSTATUS status;
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO auth;
+    uint8_t empty_input[1] = {0};
+    uint8_t empty_output[16] = {0};
+    PUCHAR input_buffer;
+    PUCHAR output_buffer;
+    ULONG output_capacity;
     int ok = 0;
 
     if (aad_size > ULONG_MAX || input_size > ULONG_MAX) return 0;
@@ -39,6 +44,10 @@ static int mn_bcrypt_crypt(int encrypt, const uint8_t key_bytes[32],
                                          object_size, (PUCHAR)key_bytes, 32, 0);
     if (status < 0) goto cleanup;
 
+    input_buffer = (PUCHAR)(input_size ? input : empty_input);
+    output_buffer = input_size ? output : empty_output;
+    output_capacity = input_size ? (ULONG)input_size : (ULONG)sizeof(empty_output);
+
     BCRYPT_INIT_AUTH_MODE_INFO(auth);
     auth.pbNonce = (PUCHAR)nonce;
     auth.cbNonce = 12;
@@ -48,12 +57,12 @@ static int mn_bcrypt_crypt(int encrypt, const uint8_t key_bytes[32],
     auth.cbTag = 16;
 
     if (encrypt) {
-        status = BCryptEncrypt(key, (PUCHAR)input, (ULONG)input_size, &auth,
-                               NULL, 0, output, (ULONG)input_size,
+        status = BCryptEncrypt(key, input_buffer, (ULONG)input_size, &auth,
+                               NULL, 0, output_buffer, output_capacity,
                                &result_size, 0);
     } else {
-        status = BCryptDecrypt(key, (PUCHAR)input, (ULONG)input_size, &auth,
-                               NULL, 0, output, (ULONG)input_size,
+        status = BCryptDecrypt(key, input_buffer, (ULONG)input_size, &auth,
+                               NULL, 0, output_buffer, output_capacity,
                                &result_size, 0);
     }
     ok = status >= 0 && result_size == input_size;
@@ -147,8 +156,13 @@ int mn_crypto_aes256gcm_encrypt(const uint8_t key[32], const uint8_t nonce[12],
                                 const uint8_t *plain, size_t plain_size,
                                 uint8_t *cipher, uint8_t tag[16]) {
     EVP_CIPHER_CTX *ctx;
+    uint8_t empty_final[16];
+    uint8_t *final_output;
     int length = 0, final_length = 0, ok = 0;
-    if (aad_size > INT_MAX || plain_size > INT_MAX) return 0;
+    if (aad_size > INT_MAX || plain_size > INT_MAX ||
+        (!aad && aad_size != 0) || (!plain && plain_size != 0) ||
+        (!cipher && plain_size != 0) || !key || !nonce || !tag)
+        return 0;
     ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return 0;
     if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) goto done;
@@ -156,7 +170,8 @@ int mn_crypto_aes256gcm_encrypt(const uint8_t key[32], const uint8_t nonce[12],
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce) != 1) goto done;
     if (aad_size && EVP_EncryptUpdate(ctx, NULL, &length, aad, (int)aad_size) != 1) goto done;
     if (plain_size && EVP_EncryptUpdate(ctx, cipher, &length, plain, (int)plain_size) != 1) goto done;
-    if (EVP_EncryptFinal_ex(ctx, cipher + length, &final_length) != 1) goto done;
+    final_output = plain_size ? cipher + length : empty_final;
+    if (EVP_EncryptFinal_ex(ctx, final_output, &final_length) != 1) goto done;
     if ((size_t)(length + final_length) != plain_size) goto done;
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag) != 1) goto done;
     ok = 1;
@@ -170,8 +185,13 @@ int mn_crypto_aes256gcm_decrypt(const uint8_t key[32], const uint8_t nonce[12],
                                 const uint8_t *cipher, size_t cipher_size,
                                 const uint8_t tag[16], uint8_t *plain) {
     EVP_CIPHER_CTX *ctx;
+    uint8_t empty_final[16];
+    uint8_t *final_output;
     int length = 0, final_length = 0, ok = 0;
-    if (aad_size > INT_MAX || cipher_size > INT_MAX) return 0;
+    if (aad_size > INT_MAX || cipher_size > INT_MAX ||
+        (!aad && aad_size != 0) || (!cipher && cipher_size != 0) ||
+        (!plain && cipher_size != 0) || !key || !nonce || !tag)
+        return 0;
     ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return 0;
     if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) goto done;
@@ -180,7 +200,8 @@ int mn_crypto_aes256gcm_decrypt(const uint8_t key[32], const uint8_t nonce[12],
     if (aad_size && EVP_DecryptUpdate(ctx, NULL, &length, aad, (int)aad_size) != 1) goto done;
     if (cipher_size && EVP_DecryptUpdate(ctx, plain, &length, cipher, (int)cipher_size) != 1) goto done;
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, (void *)tag) != 1) goto done;
-    if (EVP_DecryptFinal_ex(ctx, plain + length, &final_length) != 1) goto done;
+    final_output = cipher_size ? plain + length : empty_final;
+    if (EVP_DecryptFinal_ex(ctx, final_output, &final_length) != 1) goto done;
     if ((size_t)(length + final_length) != cipher_size) goto done;
     ok = 1;
 done:
