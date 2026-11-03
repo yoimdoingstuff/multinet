@@ -122,6 +122,9 @@ struct mn_instance {
     mn_player_state_limits state_limits;
     mn_player_state_validator state_validator;
     void *state_validator_user_data;
+    int join_allowlist_enabled;
+    size_t join_allowlist_count;
+    char join_allowlist[MN_MAX_JOIN_ALLOWLIST][48];
     mn_player players[MN_MAX_PLAYERS];
     mn_room rooms[MN_MAX_ROOMS];
     size_t room_count;
@@ -561,6 +564,27 @@ static int mn_same_address(const struct sockaddr_in *left,
                            const struct sockaddr_in *right) {
     return left->sin_addr.s_addr == right->sin_addr.s_addr &&
            left->sin_port == right->sin_port;
+}
+
+static int mn_normalize_ipv4(const char *input, char output[48]) {
+    struct in_addr parsed;
+    if (!input || !input[0] || !output) return 0;
+    if (inet_pton(AF_INET, input, &parsed) != 1) return 0;
+    return inet_ntop(AF_INET, &parsed, output, 48) != NULL;
+}
+
+static int mn_join_source_is_allowed(const mn_instance *instance,
+                                     const struct sockaddr_in *from) {
+    char address[48];
+    size_t i;
+    if (!instance->join_allowlist_enabled) return 1;
+    if (!inet_ntop(AF_INET, &from->sin_addr, address, sizeof(address)))
+        return 0;
+    for (i = 0; i < instance->join_allowlist_count; ++i) {
+        if (strcmp(instance->join_allowlist[i], address) == 0)
+            return 1;
+    }
+    return 0;
 }
 
 static mn_peer *mn_find_peer_address(mn_instance *instance,
@@ -1742,6 +1766,9 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
                 mn_send_snapshot_to(instance, from);
                 return;
             }
+            /* Apply the allow-list only to new admissions. Existing session
+               peers can repeat JOIN to recover from a lost WELCOME packet. */
+            if (!mn_join_source_is_allowed(instance, from)) return;
             if (mn_active_player_count(instance) >= instance->info.max_players) return;
             for (i = 0; i < MN_MAX_PLAYERS && instance->peers[i].active; ++i) { }
             if (i == MN_MAX_PLAYERS) return;
@@ -2505,6 +2532,60 @@ int mn_set_player_state_validation(mn_instance *instance,
     instance->state_validator = validator;
     instance->state_validator_user_data = user_data;
     return 1;
+}
+
+int mn_set_join_allowlist_enabled(mn_instance *instance, int enabled) {
+    if (!instance || !instance->ready || (enabled != 0 && enabled != 1))
+        return 0;
+    instance->join_allowlist_enabled = enabled;
+    return 1;
+}
+
+int mn_allow_join_ipv4(mn_instance *instance, const char *ipv4_address) {
+    char normalized[48];
+    size_t i;
+    if (!instance || !instance->ready ||
+        !mn_normalize_ipv4(ipv4_address, normalized))
+        return 0;
+    for (i = 0; i < instance->join_allowlist_count; ++i) {
+        if (strcmp(instance->join_allowlist[i], normalized) == 0)
+            return 1;
+    }
+    if (instance->join_allowlist_count >= MN_MAX_JOIN_ALLOWLIST)
+        return 0;
+    mn_copy_text(instance->join_allowlist[instance->join_allowlist_count],
+                 sizeof(instance->join_allowlist[0]), normalized);
+    instance->join_allowlist_count++;
+    return 1;
+}
+
+int mn_disallow_join_ipv4(mn_instance *instance, const char *ipv4_address) {
+    char normalized[48];
+    size_t i;
+    if (!instance || !instance->ready ||
+        !mn_normalize_ipv4(ipv4_address, normalized))
+        return 0;
+    for (i = 0; i < instance->join_allowlist_count; ++i) {
+        if (strcmp(instance->join_allowlist[i], normalized) == 0) {
+            size_t remaining = instance->join_allowlist_count - i - 1u;
+            if (remaining != 0u) {
+                memmove(instance->join_allowlist[i],
+                        instance->join_allowlist[i + 1u],
+                        remaining * sizeof(instance->join_allowlist[0]));
+            }
+            instance->join_allowlist_count--;
+            memset(instance->join_allowlist[instance->join_allowlist_count],
+                   0, sizeof(instance->join_allowlist[0]));
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void mn_clear_join_allowlist(mn_instance *instance) {
+    if (!instance || !instance->ready) return;
+    memset(instance->join_allowlist, 0, sizeof(instance->join_allowlist));
+    instance->join_allowlist_count = 0;
 }
 
 void mn_get_info(const mn_instance *instance, mn_info *out_info) {

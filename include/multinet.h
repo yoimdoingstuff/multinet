@@ -12,6 +12,7 @@ extern "C" {
 #define MN_VERSION_STRING "0.4.0"
 #define MN_MAX_PLAYERS 16u
 #define MN_MAX_ROOMS 32u
+#define MN_MAX_JOIN_ALLOWLIST 16u
 #define MN_PLAYER_NAME_LENGTH 24u
 #define MN_ROOM_NAME_LENGTH 32u
 #define MN_MAX_MESSAGE_BYTES 768u
@@ -166,6 +167,13 @@ void mn_config_init(mn_config *config);
    Returns NULL on failure. Multiple instances may coexist in one process. */
 mn_instance *mn_create(const mn_config *config);
 void mn_destroy(mn_instance *instance);
+
+/* Optional IPv4 source allow-list for new room admissions. Disabled by
+   default. This is a network filter, not cryptographic device authentication. */
+int mn_set_join_allowlist_enabled(mn_instance *instance, int enabled);
+int mn_allow_join_ipv4(mn_instance *instance, const char *ipv4_address);
+int mn_disallow_join_ipv4(mn_instance *instance, const char *ipv4_address);
+void mn_clear_join_allowlist(mn_instance *instance);
 
 /* Session lifecycle. max_players includes the host and is clamped to 2..16. */
 int mn_host(mn_instance *instance, const char *player_name,

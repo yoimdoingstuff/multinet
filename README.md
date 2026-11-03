@@ -14,7 +14,7 @@ It targets lightweight desktop games and tools. It has no engine or third-party 
 - Periodic player snapshots: position, rotation, velocity, score, flags, colour and four application-defined appearance IDs.
 - Host-controlled match start, and queued connection, room, player, match, message and error events.
 - Application-defined message channels with both best-effort and reliable acknowledged delivery, per-delivery IDs/events, broadcast and host-to-player messaging.
-- Non-blocking sockets, timeouts, per-session random join tokens, fixed-endian packet serialization, stale-packet sequence checks, ping/latency measurement and basic host-side state/message cooldowns.
+- Non-blocking sockets, timeouts, per-session random join tokens, optional host-side IPv4 admission allow-list, fixed-endian packet serialization, stale-packet sequence checks, ping/latency measurement and basic host-side state/message cooldowns.
 - Windows Winsock and POSIX socket backends; CMake build, installable static library, integration tests and interactive demo.
 
 The library transports game state but does not simulate it. Golfgame remains responsible for physics, ball interpolation, scoring and UI.

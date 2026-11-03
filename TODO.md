@@ -19,7 +19,8 @@
 - [x] Exercise reliable broadcast fan-out and one acknowledgement from each of 15 recipients.
 - [x] Re-ACK duplicate reliable packets during cooldown and only remember accepted messages after queue capacity is reserved.
 - [x] Validate peer-controlled state against configurable position/velocity bounds and application callbacks.
-- [ ] Add an explicit allow-list / pairing flow for nearby devices.
+- [x] Add a host-controlled IPv4 source allow-list for new nearby-device admissions.
+- [ ] Add cryptographic device identity and challenge-response pairing; an IP allow-list is not authentication.
 - [ ] Add optional encrypted and authenticated transport for untrusted networks.
 
 ## Transport and discovery

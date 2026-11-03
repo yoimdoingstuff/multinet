@@ -21,7 +21,7 @@ A player snapshot contains a count, match-started flag and up to 16 fixed-size p
 
 ## Session model
 
-The host owns room membership and assigns player IDs. A joining client receives a per-session 64-bit random token. Client state, leave and application-message packets must include that token and originate from the address bound to the session. Tokens are generated using the operating system random source (`BCryptGenRandom` on Windows and `/dev/urandom` on POSIX).
+The host owns room membership and assigns player IDs. New admissions can optionally be restricted by an IPv4 source-address allow-list maintained by the host application. This filter is disabled by default and does not disconnect existing members. It is intentionally not described as cryptographic pairing: IP addresses can change and may be spoofed. A joining client receives a per-session 64-bit random token. Client state, leave and application-message packets must include that token and originate from the address bound to the session. Tokens are generated using the operating system random source (`BCryptGenRandom` on Windows and `/dev/urandom` on POSIX).
 
 The token is a basic session credential, not encryption. Traffic is not confidential, packets are not cryptographically signed, and the host is not a complete anti-cheat authority. A hostile local-network peer may still spoof, replay or flood traffic in ways that require stronger protocol protections before this is used outside trusted LAN play.
 

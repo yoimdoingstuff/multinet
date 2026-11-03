@@ -112,6 +112,14 @@ int main(void) {
     }
     CHECK(found_loopback, "enumerate the IPv4 loopback interface");
 
+    CHECK(!mn_allow_join_ipv4(host, "not-an-ip-address"),
+          "reject malformed IPv4 addresses in the join allow-list");
+    CHECK(mn_allow_join_ipv4(host, "192.0.2.1") &&
+          mn_allow_join_ipv4(host, "192.0.2.1"),
+          "add an allowed IPv4 address idempotently");
+    CHECK(mn_set_join_allowlist_enabled(host, 1),
+          "enable the host join allow-list");
+
     CHECK(mn_discover_auto(auto_scanner),
           "start combined broadcast, directed-subnet and mDNS discovery");
     mn_get_info(auto_scanner, &auto_info);
@@ -167,6 +175,22 @@ int main(void) {
     CHECK(mn_join_from(client, loopback_interface.address, "127.0.0.1",
                        config.port, "Client"),
           "join while binding the client to a selected local interface");
+    for (iteration = 0; iteration < 30; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(client, 0.01f);
+        sleep_ms(5);
+    }
+    mn_get_info(host, &host_info);
+    mn_get_info(client, &client_info);
+    CHECK(host_info.player_count == 1 &&
+          client_info.status == MN_STATUS_CONNECTING,
+          "host allow-list blocks a new client from an unapproved address");
+    CHECK(mn_disallow_join_ipv4(host, "192.0.2.1"),
+          "remove an address from the host allow-list");
+    CHECK(mn_allow_join_ipv4(host, loopback_interface.address),
+          "approve the client's actual source IPv4 address");
+    CHECK(!mn_set_join_allowlist_enabled(host, 2),
+          "reject non-boolean allow-list enable values");
 
     memset(&state, 0, sizeof(state));
     state.position.x = 12.5f;

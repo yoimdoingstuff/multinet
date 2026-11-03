@@ -8,12 +8,15 @@ Call `mn_config_init()` to populate defaults, optionally change the UDP port, ap
 
 The default app ID is `MN_DEFAULT_APP_ID`. Two games using different IDs will not see each other's discovery offers or accept each other's packets, even when using the same UDP port. Give each application a stable, unique ID for release builds.
 
+The source-address allow-list is only a coarse local-network admission filter. IPv4 addresses can change under DHCP and may be spoofed on some networks. It is not secure device pairing, user authentication or a replacement for an authenticated cryptographic handshake. Keep it disabled for open LAN rooms, or populate it with addresses managed by the surrounding game/app.
+
 `mn_create()` opens an ephemeral local UDP socket. Hosting switches that socket to the configured listening port; joining keeps the ephemeral source port and targets the supplied server port. A second independent `mn_instance` may be created in the same process and used as a separate test client.
 
 ## Hosting and joining
 
 - `mn_host(instance, player_name, room_name, max_players)` starts a room on all local IPv4 interfaces. The host is player ID 1. `max_players` includes the host and is clamped to 2–16.
 - `mn_host_on(..., local_ipv4)` binds the host to one selected local adapter address.
+- `mn_set_join_allowlist_enabled(instance, 1)` makes the host accept new room members only from addresses added with `mn_allow_join_ipv4()`. Use `mn_disallow_join_ipv4()` to revoke an address and `mn_clear_join_allowlist()` to remove all entries. The list holds up to `MN_MAX_JOIN_ALLOWLIST` IPv4 addresses, is disabled by default, and remains configured across `mn_leave()` calls on that instance. Changes take effect immediately for new admissions; already connected peers are not disconnected.
 - `mn_discover_on(instance, interface)` sends discovery using that adapter's directed IPv4 broadcast address.
 - `mn_join_from(instance, local_ipv4, host, port, player_name)` binds the client to a chosen local adapter before connecting. This can select an Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN IP link.
 - `mn_discover()` starts a broadcast-only scan. `mn_discover_auto()` is the recommended default: it sends global broadcast, directed subnet-broadcast probes on each usable OS IPv4 interface, and mDNS/DNS-SD concurrently, then retries them during the discovery window. Call `mn_update()` while it runs, then query `mn_get_rooms()`.
