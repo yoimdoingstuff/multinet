@@ -58,6 +58,8 @@ int main(void) {
     mn_instance *client = NULL;
     mn_instance *scanner = NULL;
     mn_instance *auto_scanner = NULL;
+    mn_instance *bad_key_scanner = NULL;
+    mn_instance *rejected_client = NULL;
     mn_config auto_config;
     mn_info auto_info;
     mn_room discovered_rooms[MN_MAX_ROOMS];
@@ -72,6 +74,9 @@ int main(void) {
     mn_player state, received;
     mn_player_state_limits state_limits, invalid_state_limits;
     test_state_validator_context validator_context = {0u, 0u, 0u};
+    uint8_t room_key[MN_ROOM_KEY_BYTES], wrong_room_key[MN_ROOM_KEY_BYTES];
+    uint8_t client_device_id[MN_DEVICE_ID_BYTES], rejected_device_id[MN_DEVICE_ID_BYTES];
+    int pairing_request_seen = 0, rejection_request_seen = 0, rejection_received = 0;
     mn_event event;
     int result = 0;
     int connected = 0, message_received = 0, host_message_received = 0;
@@ -89,11 +94,27 @@ int main(void) {
     host = mn_create(&config);
     client = mn_create(&config);
     scanner = mn_create(&config);
+    bad_key_scanner = mn_create(&config);
     auto_config = config;
     auto_config.enable_broadcast = 1;
     auto_scanner = mn_create(&auto_config);
-    CHECK(host != NULL && client != NULL && scanner != NULL && auto_scanner != NULL,
+    CHECK(host != NULL && client != NULL && scanner != NULL &&
+          bad_key_scanner != NULL && auto_scanner != NULL,
           "create independent host, client and discovery instances");
+    CHECK(mn_crypto_available() &&
+          mn_generate_room_key(room_key) &&
+          mn_generate_room_key(wrong_room_key),
+          "AES-GCM backend and operating-system room-key generation are available");
+    wrong_room_key[0] ^= 0xA5u;
+    CHECK(mn_set_room_key(host, room_key) &&
+          mn_set_room_key(client, room_key) &&
+          mn_set_room_key(scanner, room_key) &&
+          mn_set_room_key(auto_scanner, room_key) &&
+          mn_set_room_key(bad_key_scanner, wrong_room_key),
+          "configure authenticated encryption before opening the room");
+    CHECK(mn_get_device_id(client, client_device_id) &&
+          mn_device_id_is_valid(client_device_id),
+          "client receives a non-zero persistent device identifier");
     mn_player_state_limits_init(&state_limits);
     state_limits.max_abs_position = 100.0f;
     state_limits.max_abs_velocity = 20.0f;
@@ -127,6 +148,8 @@ int main(void) {
           "add an allowed IPv4 address idempotently");
     CHECK(mn_set_join_allowlist_enabled(host, 1),
           "enable the host join allow-list");
+    CHECK(mn_set_pairing_required(host, 1),
+          "require device pairing before admitting room members");
 
     CHECK(mn_discover_auto(auto_scanner),
           "start combined broadcast, directed-subnet and mDNS discovery");
@@ -146,6 +169,18 @@ int main(void) {
     CHECK(mn_host_on(host, "Host", "Local Test", MN_MAX_PLAYERS,
                      loopback_interface.address),
           "host explicitly on the selected loopback interface");
+    CHECK(!mn_set_room_key(host, room_key),
+          "prevent changing the room key while hosting");
+    CHECK(mn_discover_at(bad_key_scanner, "127.0.0.1", config.port),
+          "wrong-key client can attempt unicast discovery");
+    for (iteration = 0; iteration < 20; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(bad_key_scanner, 0.01f);
+        sleep_ms(5);
+    }
+    CHECK(mn_get_rooms(bad_key_scanner, NULL, 0) == 0,
+          "wrong room key cannot authenticate or discover the encrypted room");
+    mn_stop_discovery(bad_key_scanner);
 
     CHECK(!mn_discover(scanner),
           "disabled broadcast reports that an alternate discovery path is required");
@@ -200,6 +235,21 @@ int main(void) {
     CHECK(!mn_set_join_allowlist_enabled(host, 2),
           "reject non-boolean allow-list enable values");
 
+    for (iteration = 0; iteration < 30; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(client, 0.01f);
+        while (mn_poll_event(host, &event)) {
+            if (event.type == MN_EVENT_PAIRING_REQUEST &&
+                memcmp(event.device_id, client_device_id, MN_DEVICE_ID_BYTES) == 0)
+                pairing_request_seen = 1;
+        }
+        sleep_ms(5);
+    }
+    CHECK(pairing_request_seen && host_info.player_count == 1,
+          "unknown device creates a pairing request without entering the room");
+    CHECK(mn_approve_pairing(host, client_device_id, 1),
+          "approve pairing and add the device to the trusted-device list");
+
     memset(&state, 0, sizeof(state));
     state.position.x = 12.5f;
     state.position.y = -3.25f;
@@ -216,7 +266,51 @@ int main(void) {
         if (client_info.status == MN_STATUS_CONNECTED) { connected = 1; break; }
         sleep_ms(5);
     }
-    CHECK(connected, "client receives welcome packet");
+    CHECK(connected, "paired client receives welcome packet");
+    CHECK(mn_get_device_id(client, rejected_device_id) &&
+          memcmp(client_device_id, rejected_device_id, MN_DEVICE_ID_BYTES) == 0,
+          "device identifier remains stable through the connection lifecycle");
+
+    rejected_client = mn_create(&config);
+    CHECK(rejected_client != NULL &&
+          mn_set_room_key(rejected_client, room_key) &&
+          mn_join_from(rejected_client, loopback_interface.address,
+                       "127.0.0.1", config.port, "Rejected"),
+          "second device begins an encrypted pairing request");
+    CHECK(mn_get_device_id(rejected_client, rejected_device_id),
+          "read the second device identifier");
+    for (iteration = 0; iteration < 80 && !rejection_request_seen; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(rejected_client, 0.01f);
+        while (mn_poll_event(host, &event)) {
+            if (event.type == MN_EVENT_PAIRING_REQUEST &&
+                memcmp(event.device_id, rejected_device_id, MN_DEVICE_ID_BYTES) == 0)
+                rejection_request_seen = 1;
+        }
+        sleep_ms(5);
+    }
+    CHECK(rejection_request_seen,
+          "host receives a separate pairing request for an unknown device");
+    CHECK(mn_approve_pairing(host, rejected_device_id, 0),
+          "host can reject a device's pairing request");
+    for (iteration = 0; iteration < 20 && !rejection_received; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(rejected_client, 0.01f);
+        while (mn_poll_event(rejected_client, &event)) {
+            if (event.type == MN_EVENT_PAIRING_REJECTED)
+                rejection_received = 1;
+        }
+        sleep_ms(5);
+    }
+    mn_get_info(client, &client_info);
+    CHECK(rejection_received && mn_is_connected(client) &&
+          mn_get_info != NULL,
+          "rejected device is notified without disturbing the approved client");
+    CHECK(mn_unpair_device(host, client_device_id) &&
+          mn_pair_device(host, client_device_id),
+          "host can revoke and re-pair a stored device identifier");
+    CHECK(mn_set_pairing_required(host, 0),
+          "host can switch off approval prompts for this open test room");
 
     for (iteration = 0; iteration < 80; ++iteration) {
         (void)mn_set_local_player(client, &state);
@@ -431,7 +525,9 @@ int main(void) {
     for (j = 0; j < MN_MAX_PLAYERS - 2u; ++j) {
         char name[MN_PLAYER_NAME_LENGTH];
         extra_clients[j] = mn_create(&config);
-        CHECK(extra_clients[j] != NULL, "create additional player instance");
+        CHECK(extra_clients[j] != NULL &&
+              mn_set_room_key(extra_clients[j], room_key),
+              "create additional encrypted player instance");
         snprintf(name, sizeof(name), "Guest%02u", (unsigned)(j + 1u));
         if (j == 0) {
             CHECK(mn_join_room(extra_clients[j], &discovered_rooms[0], name),
@@ -545,6 +641,8 @@ int main(void) {
     printf("MultiNet tests passed (16-player room, snapshots, messages, match start, leave).\n");
 cleanup:
     for (j = 0; j < extra_count; ++j) if (extra_clients[j]) mn_destroy(extra_clients[j]);
+    if (rejected_client) mn_destroy(rejected_client);
+    if (bad_key_scanner) mn_destroy(bad_key_scanner);
     if (auto_scanner) mn_destroy(auto_scanner);
     if (scanner) mn_destroy(scanner);
     if (client) mn_destroy(client);
