@@ -7,12 +7,15 @@
 extern "C" {
 #endif
 #define MN_VERSION_MAJOR 0
-#define MN_VERSION_MINOR 4
+#define MN_VERSION_MINOR 5
 #define MN_VERSION_PATCH 0
-#define MN_VERSION_STRING "0.4.0"
+#define MN_VERSION_STRING "0.5.0"
 #define MN_MAX_PLAYERS 16u
 #define MN_MAX_ROOMS 32u
 #define MN_MAX_JOIN_ALLOWLIST 16u
+#define MN_DEVICE_ID_BYTES 16u
+#define MN_ROOM_KEY_BYTES 32u
+#define MN_MAX_PAIRED_DEVICES 32u
 #define MN_PLAYER_NAME_LENGTH 24u
 #define MN_ROOM_NAME_LENGTH 32u
 #define MN_MAX_MESSAGE_BYTES 768u
@@ -123,7 +126,10 @@ typedef enum mn_event_type {
     MN_EVENT_MESSAGE,
     MN_EVENT_ERROR,
     MN_EVENT_MESSAGE_ACKNOWLEDGED,
-    MN_EVENT_MESSAGE_FAILED
+    MN_EVENT_MESSAGE_FAILED,
+    MN_EVENT_PAIRING_REQUEST,
+    MN_EVENT_PAIRING_APPROVED,
+    MN_EVENT_PAIRING_REJECTED
 } mn_event_type;
 
 
@@ -158,6 +164,7 @@ typedef struct mn_event {
     uint8_t data[MN_MAX_MESSAGE_BYTES];
     char text[160];
     uint32_t delivery_id; /* Reliable application-message ID, zero otherwise. */
+    uint8_t device_id[MN_DEVICE_ID_BYTES]; /* Set on pairing events. */
 } mn_event;
 
 /* Populate config with documented defaults. */
@@ -174,6 +181,35 @@ int mn_set_join_allowlist_enabled(mn_instance *instance, int enabled);
 int mn_allow_join_ipv4(mn_instance *instance, const char *ipv4_address);
 int mn_disallow_join_ipv4(mn_instance *instance, const char *ipv4_address);
 void mn_clear_join_allowlist(mn_instance *instance);
+
+/* Each instance has a random 128-bit device ID. Save it in application
+   settings and restore it with mn_set_device_id() on the next launch. */
+int mn_get_device_id(const mn_instance *instance,
+                     uint8_t out_device_id[MN_DEVICE_ID_BYTES]);
+int mn_set_device_id(mn_instance *instance,
+                     const uint8_t device_id[MN_DEVICE_ID_BYTES]);
+/* Device pairing is separate from the optional IPv4 source allow-list.
+   When required, unknown devices generate MN_EVENT_PAIRING_REQUEST and remain
+   pending until mn_approve_pairing() accepts or rejects them. */
+int mn_set_pairing_required(mn_instance *instance, int required);
+int mn_pair_device(mn_instance *instance,
+                   const uint8_t device_id[MN_DEVICE_ID_BYTES]);
+int mn_unpair_device(mn_instance *instance,
+                     const uint8_t device_id[MN_DEVICE_ID_BYTES]);
+void mn_clear_paired_devices(mn_instance *instance);
+int mn_approve_pairing(mn_instance *instance,
+                       const uint8_t device_id[MN_DEVICE_ID_BYTES],
+                       int approved);
+
+/* Optional authenticated encryption. The same random 32-byte key must be
+   configured on every member before discovery/hosting/joining. The key is
+   copied into the instance. With encryption disabled at build time, these
+   functions report unavailable and cannot enable secure sessions. */
+int mn_crypto_available(void);
+int mn_generate_room_key(uint8_t out_key[MN_ROOM_KEY_BYTES]);
+int mn_set_room_key(mn_instance *instance,
+                    const uint8_t room_key[MN_ROOM_KEY_BYTES]);
+void mn_clear_room_key(mn_instance *instance);
 
 /* Session lifecycle. max_players includes the host and is clamped to 2..16. */
 int mn_host(mn_instance *instance, const char *player_name,

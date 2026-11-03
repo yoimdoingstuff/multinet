@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(MultiNet VERSION 0.4.0 LANGUAGES C)
+project(MultiNet VERSION 0.5.0 LANGUAGES C)
 
 include(CTest)
 include(CMakePackageConfigHelpers)
@@ -8,7 +8,9 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-add_library(multinet STATIC src/multinet.c)
+option(MULTINET_ENABLE_ENCRYPTION "Enable AES-256-GCM authenticated UDP transport" ON)
+
+add_library(multinet STATIC src/multinet.c src/multinet_crypto.c)
 add_library(MultiNet::MultiNet ALIAS multinet)
 set_target_properties(multinet PROPERTIES EXPORT_NAME MultiNet)
 target_include_directories(multinet PUBLIC
@@ -23,6 +25,17 @@ if(WIN32)
     target_link_libraries(multinet PUBLIC ws2_32 bcrypt iphlpapi)
 elseif(UNIX)
     target_link_libraries(multinet PUBLIC m)
+endif()
+
+if(MULTINET_ENABLE_ENCRYPTION)
+    if(WIN32)
+        # Windows CNG/BCrypt provides AES-256-GCM without another runtime DLL.
+        target_compile_definitions(multinet PRIVATE MN_ENABLE_CRYPTO=1)
+    elseif(UNIX)
+        find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+        target_compile_definitions(multinet PRIVATE MN_ENABLE_CRYPTO=1)
+        target_link_libraries(multinet PUBLIC OpenSSL::Crypto)
+    endif()
 endif()
 
 if(MSVC)
@@ -93,12 +106,18 @@ if(MULTINET_BUILD_FUZZERS)
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_definitions(multinet_packet_fuzzer PRIVATE
         _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE=1)
+    target_sources(multinet_packet_fuzzer PRIVATE src/multinet_crypto.c)
     target_compile_options(multinet_packet_fuzzer PRIVATE
         -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
         -Wall -Wextra -Wpedantic)
     target_link_options(multinet_packet_fuzzer PRIVATE
         -fsanitize=fuzzer,address,undefined)
     target_link_libraries(multinet_packet_fuzzer PRIVATE m)
+    if(MULTINET_ENABLE_ENCRYPTION)
+        find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+        target_compile_definitions(multinet_packet_fuzzer PRIVATE MN_ENABLE_CRYPTO=1)
+        target_link_libraries(multinet_packet_fuzzer PRIVATE OpenSSL::Crypto)
+    endif()
 endif()
 
 install(TARGETS multinet EXPORT MultiNetTargets ARCHIVE DESTINATION lib)
