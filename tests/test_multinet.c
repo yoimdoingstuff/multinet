@@ -177,10 +177,15 @@ int main(void) {
     CHECK(host != NULL && client != NULL && scanner != NULL &&
           bad_key_scanner != NULL && auto_scanner != NULL,
           "create independent host, client and discovery instances");
-    CHECK(mn_crypto_available() && test_aes256gcm_vector() &&
-          test_hmac_sha256_vector() && mn_generate_room_key(room_key) &&
+    CHECK(mn_crypto_available(),
+          "AES-GCM backend is available");
+    CHECK(test_aes256gcm_vector(),
+          "AES-256-GCM known-answer, decryption, empty-payload AAD and tag rejection tests pass");
+    CHECK(test_hmac_sha256_vector(),
+          "HMAC-SHA256 known-answer test passes");
+    CHECK(mn_generate_room_key(room_key) &&
           mn_generate_room_key(wrong_room_key),
-          "AES-GCM/HMAC backend and operating-system key generation pass known-answer tests");
+          "operating-system room-key generation succeeds");
     wrong_room_key[0] ^= 0xA5u;
     CHECK(mn_set_room_key(host, room_key) &&
           mn_set_room_key(client, room_key) &&

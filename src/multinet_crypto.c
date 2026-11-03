@@ -158,7 +158,7 @@ int mn_crypto_aes256gcm_encrypt(const uint8_t key[32], const uint8_t nonce[12],
     EVP_CIPHER_CTX *ctx;
     uint8_t empty_final[16];
     uint8_t *final_output;
-    int length = 0, final_length = 0, ok = 0;
+    int aad_length = 0, length = 0, final_length = 0, ok = 0;
     if (aad_size > INT_MAX || plain_size > INT_MAX ||
         (!aad && aad_size != 0) || (!plain && plain_size != 0) ||
         (!cipher && plain_size != 0) || !key || !nonce || !tag)
@@ -168,7 +168,7 @@ int mn_crypto_aes256gcm_encrypt(const uint8_t key[32], const uint8_t nonce[12],
     if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) goto done;
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 12, NULL) != 1) goto done;
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce) != 1) goto done;
-    if (aad_size && EVP_EncryptUpdate(ctx, NULL, &length, aad, (int)aad_size) != 1) goto done;
+    if (aad_size && EVP_EncryptUpdate(ctx, NULL, &aad_length, aad, (int)aad_size) != 1) goto done;
     if (plain_size && EVP_EncryptUpdate(ctx, cipher, &length, plain, (int)plain_size) != 1) goto done;
     final_output = plain_size ? cipher + length : empty_final;
     if (EVP_EncryptFinal_ex(ctx, final_output, &final_length) != 1) goto done;
@@ -187,7 +187,7 @@ int mn_crypto_aes256gcm_decrypt(const uint8_t key[32], const uint8_t nonce[12],
     EVP_CIPHER_CTX *ctx;
     uint8_t empty_final[16];
     uint8_t *final_output;
-    int length = 0, final_length = 0, ok = 0;
+    int aad_length = 0, length = 0, final_length = 0, ok = 0;
     if (aad_size > INT_MAX || cipher_size > INT_MAX ||
         (!aad && aad_size != 0) || (!cipher && cipher_size != 0) ||
         (!plain && cipher_size != 0) || !key || !nonce || !tag)
@@ -197,7 +197,7 @@ int mn_crypto_aes256gcm_decrypt(const uint8_t key[32], const uint8_t nonce[12],
     if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) goto done;
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 12, NULL) != 1) goto done;
     if (EVP_DecryptInit_ex(ctx, NULL, NULL, key, nonce) != 1) goto done;
-    if (aad_size && EVP_DecryptUpdate(ctx, NULL, &length, aad, (int)aad_size) != 1) goto done;
+    if (aad_size && EVP_DecryptUpdate(ctx, NULL, &aad_length, aad, (int)aad_size) != 1) goto done;
     if (cipher_size && EVP_DecryptUpdate(ctx, plain, &length, cipher, (int)cipher_size) != 1) goto done;
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, (void *)tag) != 1) goto done;
     final_output = cipher_size ? plain + length : empty_final;
