@@ -40,7 +40,7 @@
 
 - [x] Integrate MultiNet into Golfgame through a thin `tg_net_*` compatibility adapter; remove the duplicated UDP transport implementation.
 - [x] Add package-config generation and an installed-consumer CI test.
-- [ ] Publish a versioned release archive.
+- [ ] Publish a versioned release archive (tag-triggered Linux/Windows packaging and GitHub Release workflow added; publishing requires pushing a matching version tag).
 - [x] Add a reliable chat-message example using application-defined channels and delivery acknowledgements.
 - [x] Add a simple replicated 2D object example using player position state.
 - [x] Add an optional Clang/libFuzzer target for malformed headers, lengths, room offers and player-state payloads.

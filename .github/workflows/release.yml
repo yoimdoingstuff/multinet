@@ -1,0 +1,113 @@
+name: Publish versioned release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches project and public API versions
+        run: cmake -DSOURCE_DIR="${GITHUB_WORKSPACE}" -DRELEASE_TAG="${GITHUB_REF_NAME}" -P scripts/check-release-version.cmake
+
+  package-linux:
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+      - name: Install distributable package
+        run: |
+          cmake --install build --prefix package-root
+          mkdir -p package-root/docs
+          cp README.md TODO.md LICENSE LICENSE.LESSER package-root/
+          cp docs/*.md package-root/docs/
+          cp -R examples package-root/examples-source
+          printf 'MultiNet %s\n' "${GITHUB_REF_NAME}" > package-root/VERSION.txt
+      - name: Create Linux archive and checksum
+        run: |
+          archive="MultiNet-${GITHUB_REF_NAME}-linux-x64.tar.gz"
+          tar -czf "$archive" -C package-root .
+          sha256sum "$archive" > "$archive.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            MultiNet-${{ github.ref_name }}-linux-x64.tar.gz
+            MultiNet-${{ github.ref_name }}-linux-x64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  package-windows:
+    needs: verify-tag
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config Release --parallel
+          ctest --test-dir build -C Release --output-on-failure
+      - name: Install distributable package
+        shell: pwsh
+        run: |
+          cmake --install build --config Release --prefix package-root
+          New-Item -ItemType Directory -Force package-root/docs | Out-Null
+          Copy-Item README.md, TODO.md, LICENSE, LICENSE.LESSER package-root/
+          Copy-Item docs/*.md package-root/docs/
+          Copy-Item examples package-root/examples-source -Recurse
+          Set-Content -Path package-root/VERSION.txt -Value "MultiNet $env:GITHUB_REF_NAME"
+      - name: Create Windows archive and checksum
+        shell: pwsh
+        run: |
+          $archive = "MultiNet-$env:GITHUB_REF_NAME-windows-x64.zip"
+          Compress-Archive -Path package-root/* -DestinationPath $archive -Force
+          $hash = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "$archive.sha256" -Value "$hash  $archive" -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            MultiNet-${{ github.ref_name }}-windows-x64.zip
+            MultiNet-${{ github.ref_name }}-windows-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [package-linux, package-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release-assets/*.tar.gz release-assets/*.zip release-assets/*.sha256)
+          if [[ ${#files[@]} -ne 4 ]]; then
+            printf 'Expected four release files, found %s\n' "${#files[@]}" >&2
+            find release-assets -type f -print >&2
+            exit 1
+          fi
+          args=(release create "${GITHUB_REF_NAME}" "${files[@]}" --verify-tag --title "MultiNet ${GITHUB_REF_NAME}" --generate-notes)
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"

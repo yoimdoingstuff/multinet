@@ -39,7 +39,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The build produces `multinet` (static library), `multinet_demo` (interactive demo), `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example) and `multinet_tests` (loopback integration test). Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
+The build produces `multinet` (static library), `multinet_demo` (interactive demo), `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example) and `multinet_tests` (loopback integration test). Push a version tag such as `v0.4.0` to trigger the release workflow, which verifies version consistency, packages Windows/Linux builds and publishes a GitHub Release with SHA-256 sidecars. Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
 
 An optional Clang/libFuzzer target exercises malformed packet framing, room-offer parsing and player-state decoding. It is separate from the normal cross-platform build:
 

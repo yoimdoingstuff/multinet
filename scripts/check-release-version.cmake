@@ -1,0 +1,31 @@
+# Verify that a release tag matches both CMake and the public C API version.
+if(NOT DEFINED SOURCE_DIR OR NOT DEFINED RELEASE_TAG)
+    message(FATAL_ERROR "Pass SOURCE_DIR and RELEASE_TAG to check-release-version.cmake")
+endif()
+
+file(READ "${SOURCE_DIR}/CMakeLists.txt" _cmake_text)
+string(REGEX MATCH "project\\(MultiNet VERSION ([0-9]+\\.[0-9]+\\.[0-9]+)" _project_match "${_cmake_text}")
+if(NOT _project_match)
+    message(FATAL_ERROR "Could not read MultiNet project version from CMakeLists.txt")
+endif()
+set(_project_version "${CMAKE_MATCH_1}")
+
+file(READ "${SOURCE_DIR}/include/multinet.h" _header_text)
+string(REGEX MATCH "#define MN_VERSION_STRING \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _header_match "${_header_text}")
+if(NOT _header_match)
+    message(FATAL_ERROR "Could not read MN_VERSION_STRING from include/multinet.h")
+endif()
+set(_header_version "${CMAKE_MATCH_1}")
+
+string(REGEX REPLACE "^v" "" _tag_version "${RELEASE_TAG}")
+if(NOT RELEASE_TAG MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$")
+    message(FATAL_ERROR "Release tag must look like vMAJOR.MINOR.PATCH or a prerelease tag; got '${RELEASE_TAG}'")
+endif()
+if(NOT _project_version STREQUAL _header_version)
+    message(FATAL_ERROR "CMake version ${_project_version} does not match header version ${_header_version}")
+endif()
+if(NOT _tag_version STREQUAL _project_version)
+    message(FATAL_ERROR "Tag ${RELEASE_TAG} does not match MultiNet version ${_project_version}")
+endif()
+
+message(STATUS "Verified release tag ${RELEASE_TAG} matches MultiNet ${_project_version}")
