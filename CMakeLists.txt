@@ -20,6 +20,8 @@ endif()
 if(WIN32)
     target_compile_definitions(multinet PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     target_link_libraries(multinet PUBLIC ws2_32 bcrypt)
+elseif(UNIX)
+    target_link_libraries(multinet PUBLIC m)
 endif()
 
 if(MSVC)

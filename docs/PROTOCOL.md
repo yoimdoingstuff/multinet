@@ -7,7 +7,7 @@ Every datagram begins with a 16-byte header:
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 4 | ASCII magic `MNET` |
-| 4 | 1 | Protocol version (`1`) |
+| 4 | 1 | Protocol version (`2`) |
 | 5 | 1 | Packet type |
 | 6 | 2 | Total datagram size, including header |
 | 8 | 4 | Application ID |
@@ -15,7 +15,7 @@ Every datagram begins with a 16-byte header:
 
 Integers are encoded in big-endian byte order. Float fields are 32-bit IEEE-754 values encoded using their bit representation in big-endian order. The maximum supported UDP datagram size is 1472 bytes. No compiler-specific structure packing or host-endian struct dumps are used.
 
-Packet types are discovery, offer, join, welcome, player state, snapshot, leave, match start and application message. Version and app ID are checked before a packet is handled. Payload lengths are checked against the exact expected size before fields are read.
+Packet types are discovery, offer, join, welcome, player state, snapshot, leave, match start and application message. Version and app ID are checked before a packet is handled. Payload lengths are checked against the exact expected size before fields are read. Version 2 adds a 32-bit sequence number to client player-state packets and host snapshots; receivers ignore duplicated, stale or reordered state/snapshot packets.
 
 A player snapshot contains a count, match-started flag and up to 16 fixed-size player records. A player record contains ID, score, flags, packed RGBA colour, four appearance identifiers, a fixed-size name, position, quaternion rotation and velocity.
 
@@ -27,7 +27,7 @@ The token is a basic session credential, not encryption. Traffic is not confiden
 
 ## Delivery and authority
 
-Player states are periodic snapshots. They are not individually acknowledged. Custom messages are best-effort UDP datagrams and may be lost, duplicated or reordered. The library currently has no application-level sequence numbers, retransmission queue or rate limiter. Add those features before relying on messages for persistent inventory, purchases, match results or other state that must not be lost.
+Player states are periodic snapshots. They are not individually acknowledged. Custom messages are best-effort UDP datagrams and may be lost, duplicated or reordered. Player-state updates and host snapshots include wrap-safe sequence numbers, and the host applies a simple per-peer state/message cooldown. Custom application messages remain best-effort and do not have acknowledgements, retransmission or delivery IDs. Add those features before relying on messages for persistent inventory, purchases, match results or other state that must not be lost.
 
 The host relays client-reported player state. Game code must treat it as untrusted and independently validate speed, position, score changes, hole completion and any gameplay-affecting action. Cosmetic identifiers should never confer physics or visibility advantages.
 

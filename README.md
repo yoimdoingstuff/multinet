@@ -8,12 +8,12 @@ It targets lightweight desktop games and tools. It has no engine or third-party 
 
 - Independent `mn_instance` objects. One process can host a room and connect multiple local test clients.
 - UDP host/client rooms, configurable port and application ID.
-- IPv4 LAN broadcast discovery and manual IPv4/hostname joining.
+- IPv4 LAN broadcast discovery, retrying directed/unicast discovery when broadcasts are filtered, and manual IPv4/hostname joining as a final fallback.
 - Up to **16 players per room**, including the host.
 - Periodic player snapshots: position, rotation, velocity, score, flags, colour and four application-defined appearance IDs.
 - Host-controlled match start, and queued connection, room, player, match, message and error events.
 - Application-defined message channels, broadcast and host-to-player messaging.
-- Non-blocking sockets, timeouts, per-session random join tokens and fixed-endian packet serialization.
+- Non-blocking sockets, timeouts, per-session random join tokens, fixed-endian packet serialization, stale-packet sequence checks and basic host-side state/message cooldowns.
 - Windows Winsock and POSIX socket backends; CMake build, installable static library, integration tests and interactive demo.
 
 The library transports game state but does not simulate it. Golfgame remains responsible for physics, ball interpolation, scoring and UI.
@@ -56,7 +56,7 @@ Join from the second terminal:
 
 For another PC on the same permitted LAN, replace `127.0.0.1` with the host PC's local IPv4 address. The default UDP port is `27890`; the host firewall may need to allow it. The demo does not tunnel traffic or bypass network restrictions.
 
-Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. Discover nearby rooms with `./build/multinet_demo scan`. The host, join and scan commands accept a final custom port argument.
+Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. Discover nearby rooms with `./build/multinet_demo scan`. When broadcast discovery is filtered, probe a known host directly with `./build/multinet_demo scan 27890 192.168.1.10`, or skip discovery and join directly with `./build/multinet_demo join 192.168.1.10 Bob`. Host, join and scan accept custom UDP ports.
 
 The loopback integration test exercises independent instances, player replication, ID lookup, messages in both directions, match start, the full 16-player limit and player departure. This is not a substitute for testing two physical Windows PCs over a real LAN.
 
@@ -90,7 +90,7 @@ int main(void) {
 }
 ```
 
-See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
+See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
 
 ## Scope and limitations
 

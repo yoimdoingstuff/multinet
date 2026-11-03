@@ -14,6 +14,7 @@ The default app ID is `MN_DEFAULT_APP_ID`. Two games using different IDs will no
 
 - `mn_host(instance, player_name, room_name, max_players)` starts a room. The host is player ID 1. `max_players` includes the host and is clamped to 2–16.
 - `mn_discover()` starts a short LAN broadcast scan. Call `mn_update()` while it runs, then query `mn_get_rooms()`.
+- `mn_discover_at(instance, address, port)` sends a unicast discovery probe to one known host and retries it during the discovery window. Use it when broadcast is disabled, blocked by a router, or suppressed by the local network.
 - `mn_join(instance, host, port, player_name)` joins by IPv4 address or hostname. A port of zero uses the configured port.
 - `mn_join_room()` is a convenience wrapper around a discovered `mn_room`.
 - `mn_start_match()` is host-only. Clients receive `MN_EVENT_MATCH_STARTED` and the match-started field in `mn_info`.

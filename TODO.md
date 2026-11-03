@@ -12,14 +12,16 @@
 
 ## Reliability and security
 
-- [ ] Add packet sequence numbers and stale/out-of-order snapshot rejection.
-- [ ] Add rate limits for state and application messages.
+- [x] Add packet sequence numbers and stale/out-of-order snapshot rejection.
+- [x] Add basic per-peer cooldown rate limits for state updates and application messages.
 - [ ] Add a reliable message API with acknowledgement, retry and delivery IDs.
 - [ ] Validate peer-controlled state against configurable bounds and application callbacks.
 - [ ] Add an explicit allow-list / pairing flow for nearby devices.
 - [ ] Add optional encrypted and authenticated transport for untrusted networks.
 
 ## Transport and discovery
+
+- [x] Add directed/unicast room discovery as a fallback when LAN broadcast is filtered.
 
 - [ ] Add IPv6 transport.
 - [ ] Add standards-based mDNS/DNS-SD discovery.

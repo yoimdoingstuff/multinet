@@ -1,15 +1,1401 @@
-/* MultiNet implementation split into preprocessor-safe readable fragments. */
-#include "multinet_part_01.inc"
-#include "multinet_part_02.inc"
-#include "multinet_part_03.inc"
-#include "multinet_part_04.inc"
-#include "multinet_part_05.inc"
-#include "multinet_part_06.inc"
-#include "multinet_part_07.inc"
-#include "multinet_part_08.inc"
-#include "multinet_part_09.inc"
-#include "multinet_part_10.inc"
-#include "multinet_part_11.inc"
-#include "multinet_part_12.inc"
-#include "multinet_part_13.inc"
-#include "multinet_part_14.inc"
+/* SPDX-License-Identifier: LGPL-3.0-or-later OR GPL-3.0-or-later */
+/* MultiNet C11 implementation. The public API is declared in multinet.h. */
+#include "multinet.h"
+
+#include <math.h>
+#include <float.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <bcrypt.h>
+typedef SOCKET mn_socket;
+typedef int mn_socklen;
+#define MN_BAD_SOCKET INVALID_SOCKET
+#define mn_close_socket closesocket
+#else
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+typedef int mn_socket;
+typedef socklen_t mn_socklen;
+#define MN_BAD_SOCKET (-1)
+#define mn_close_socket close
+#endif
+
+#define MN_MAGIC 0x4D4E4554u /* "MNET" */
+#define MN_PROTOCOL_VERSION 2u
+#define MN_HEADER_SIZE 16u
+#define MN_MAX_DATAGRAM_SIZE 1472u
+#define MN_EVENT_QUEUE_CAPACITY 128u
+#define MN_WIRE_PLAYER_SIZE 88u
+#define MN_OFFER_SIZE (2u + MN_ROOM_NAME_LENGTH + MN_PLAYER_NAME_LENGTH)
+#define MN_WELCOME_SIZE (4u + 8u + 1u + MN_ROOM_NAME_LENGTH)
+#define MN_CONNECT_TIMEOUT 10.0f
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(float) == 4, "MultiNet requires 32-bit floats");
+_Static_assert(FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128,
+               "MultiNet requires IEEE-754 binary32 floats");
+#endif
+
+enum mn_packet_type {
+    MN_PKT_DISCOVER = 1,
+    MN_PKT_OFFER,
+    MN_PKT_JOIN,
+    MN_PKT_WELCOME,
+    MN_PKT_STATE,
+    MN_PKT_SNAPSHOT,
+    MN_PKT_LEAVE,
+    MN_PKT_START,
+    MN_PKT_MESSAGE
+};
+
+typedef struct mn_peer {
+    int active;
+    uint32_t id;
+    uint64_t token;
+    float silence;
+    float state_cooldown;
+    float message_cooldown;
+    uint32_t last_state_sequence;
+    int has_state_sequence;
+    struct sockaddr_in address;
+    mn_player player;
+} mn_peer;
+
+struct mn_instance {
+    int ready;
+    mn_socket socket;
+    mn_config config;
+    mn_info info;
+    mn_player local_player;
+    mn_player players[MN_MAX_PLAYERS];
+    mn_room rooms[MN_MAX_ROOMS];
+    size_t room_count;
+    mn_peer peers[MN_MAX_PLAYERS];
+    struct sockaddr_in server;
+    struct sockaddr_in discovery_target;
+    int discovery_target_valid;
+    uint64_t session_token;
+    uint32_t next_player_id;
+    uint16_t local_port;
+    float discovery_left;
+    float discovery_tick;
+    float heartbeat_tick;
+    float snapshot_tick;
+    float connect_elapsed;
+    float server_silence;
+    uint32_t next_state_sequence;
+    uint32_t snapshot_sequence;
+    uint32_t last_snapshot_sequence;
+    int has_snapshot_sequence;
+    mn_event events[MN_EVENT_QUEUE_CAPACITY];
+    size_t event_head;
+    size_t event_count;
+};
+
+static void mn_copy_text(char *destination, size_t capacity, const char *source) {
+    size_t length;
+    if (!destination || capacity == 0) return;
+    if (!source) source = "";
+    length = strlen(source);
+    if (length >= capacity) length = capacity - 1;
+    memcpy(destination, source, length);
+    destination[length] = '\0';
+}
+
+static void mn_push_event(mn_instance *instance, const mn_event *event) {
+    size_t slot;
+    if (!instance || !event) return;
+    if (instance->event_count == MN_EVENT_QUEUE_CAPACITY) {
+        instance->event_head = (instance->event_head + 1u) % MN_EVENT_QUEUE_CAPACITY;
+        instance->event_count--;
+    }
+    slot = (instance->event_head + instance->event_count) % MN_EVENT_QUEUE_CAPACITY;
+    instance->events[slot] = *event;
+    instance->event_count++;
+}
+
+static void mn_emit_simple_event(mn_instance *instance, mn_event_type type,
+                                 const char *message, uint32_t player_id) {
+    mn_event event;
+    memset(&event, 0, sizeof(event));
+    event.type = type;
+    event.player_id = player_id;
+    mn_copy_text(event.text, sizeof(event.text), message);
+    mn_push_event(instance, &event);
+}
+
+
+
+static void mn_set_error(mn_instance *instance, const char *message) {
+    if (!instance) return;
+    mn_copy_text(instance->info.last_error, sizeof(instance->info.last_error), message);
+    mn_emit_simple_event(instance, MN_EVENT_ERROR, message, 0);
+}
+
+static void mn_write_u16(uint8_t *out, uint16_t value) {
+    out[0] = (uint8_t)(value >> 8);
+    out[1] = (uint8_t)value;
+}
+static void mn_write_u32(uint8_t *out, uint32_t value) {
+    out[0] = (uint8_t)(value >> 24);
+    out[1] = (uint8_t)(value >> 16);
+    out[2] = (uint8_t)(value >> 8);
+    out[3] = (uint8_t)value;
+}
+static void mn_write_u64(uint8_t *out, uint64_t value) {
+    mn_write_u32(out, (uint32_t)(value >> 32));
+    mn_write_u32(out + 4, (uint32_t)value);
+}
+static uint16_t mn_read_u16(const uint8_t *in) {
+    return (uint16_t)(((uint16_t)in[0] << 8) | (uint16_t)in[1]);
+}
+static uint32_t mn_read_u32(const uint8_t *in) {
+    return ((uint32_t)in[0] << 24) | ((uint32_t)in[1] << 16) |
+        ((uint32_t)in[2] << 8) | (uint32_t)in[3];
+}
+static uint64_t mn_read_u64(const uint8_t *in) {
+    return ((uint64_t)mn_read_u32(in) << 32) | mn_read_u32(in + 4);
+}
+static void mn_write_float(uint8_t *out, float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    mn_write_u32(out, bits);
+}
+static float mn_read_float(const uint8_t *in) {
+    uint32_t bits = mn_read_u32(in);
+    float value = 0.0f;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static int mn_random_bytes(uint8_t *out, size_t size) {
+#ifdef _WIN32
+    return BCryptGenRandom(NULL, out, (ULONG)size,
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+#else
+    FILE *random_file = fopen("/dev/urandom", "rb");
+    size_t read_size;
+    if (!random_file) return 0;
+    read_size = fread(out, 1, size, random_file);
+    fclose(random_file);
+    return read_size == size;
+#endif
+}
+
+static int mn_random_u32(uint32_t *out) {
+    unsigned attempts;
+    if (!out) return 0;
+    for (attempts = 0; attempts < 4; ++attempts) {
+        if (!mn_random_bytes((uint8_t *)out, sizeof(*out))) return 0;
+        if (*out != 0) return 1;
+    }
+    return 0;
+}
+static int mn_random_u64(uint64_t *out) {
+    unsigned attempts;
+    if (!out) return 0;
+    for (attempts = 0; attempts < 4; ++attempts) {
+        if (!mn_random_bytes((uint8_t *)out, sizeof(*out))) return 0;
+        if (*out != 0) return 1;
+    }
+    return 0;
+}
+
+static int mn_set_nonblocking(mn_socket socket_handle) {
+#ifdef _WIN32
+    u_long enabled = 1;
+    return ioctlsocket(socket_handle, FIONBIO, &enabled) == 0;
+#else
+    int flags = fcntl(socket_handle, F_GETFL, 0);
+    return flags >= 0 && fcntl(socket_handle, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
+}
+
+static mn_socket mn_open_socket(mn_instance *instance, uint16_t port) {
+    mn_socket socket_handle;
+    struct sockaddr_in address;
+    mn_socklen address_length;
+    socket_handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_handle == MN_BAD_SOCKET) {
+        mn_set_error(instance, "Could not create UDP socket");
+        return MN_BAD_SOCKET;
+    }
+#ifdef _WIN32
+    {
+        int exclusive = 1;
+        (void)setsockopt(socket_handle, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                         (const char *)&exclusive, (int)sizeof(exclusive));
+    }
+#endif
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(port);
+    if (bind(socket_handle, (struct sockaddr *)&address,
+             (mn_socklen)sizeof(address)) != 0) {
+        mn_set_error(instance, "Could not bind the requested UDP port");
+        mn_close_socket(socket_handle);
+        return MN_BAD_SOCKET;
+    }
+
+
+    if (!mn_set_nonblocking(socket_handle)) {
+        mn_set_error(instance, "Could not make the UDP socket non-blocking");
+        mn_close_socket(socket_handle);
+        return MN_BAD_SOCKET;
+    }
+    if (instance->config.enable_broadcast) {
+        int broadcast_enabled = 1;
+        (void)setsockopt(socket_handle, SOL_SOCKET, SO_BROADCAST,
+                         (const char *)&broadcast_enabled, (mn_socklen)sizeof(broadcast_enabled));
+    }
+    memset(&address, 0, sizeof(address));
+    address_length = (mn_socklen)sizeof(address);
+    if (getsockname(socket_handle, (struct sockaddr *)&address, &address_length) == 0)
+        instance->local_port = ntohs(address.sin_port);
+    return socket_handle;
+}
+
+static void mn_close_current_socket(mn_instance *instance) {
+    if (instance->socket != MN_BAD_SOCKET) mn_close_socket(instance->socket);
+    instance->socket = MN_BAD_SOCKET;
+    instance->local_port = 0;
+}
+
+static int mn_same_address(const struct sockaddr_in *left,
+                           const struct sockaddr_in *right) {
+    return left->sin_addr.s_addr == right->sin_addr.s_addr &&
+           left->sin_port == right->sin_port;
+}
+
+static mn_peer *mn_find_peer_address(mn_instance *instance,
+                                     const struct sockaddr_in *address) {
+    size_t i;
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        if (instance->peers[i].active &&
+            mn_same_address(&instance->peers[i].address, address))
+            return &instance->peers[i];
+    }
+    return NULL;
+}
+static mn_peer *mn_find_peer_token(mn_instance *instance, uint64_t token) {
+    size_t i;
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        if (instance->peers[i].active && instance->peers[i].token == token)
+            return &instance->peers[i];
+    }
+    return NULL;
+}
+static mn_peer *mn_find_peer_id(mn_instance *instance, uint32_t player_id) {
+    size_t i;
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        if (instance->peers[i].active && instance->peers[i].id == player_id)
+            return &instance->peers[i];
+    }
+    return NULL;
+}
+
+static void mn_encode_player(uint8_t *out, const mn_player *player) {
+    size_t offset = 0;
+    size_t i;
+    mn_write_u32(out + offset, player->id); offset += 4;
+    mn_write_u32(out + offset, (uint32_t)player->score); offset += 4;
+    mn_write_u32(out + offset, player->flags); offset += 4;
+    mn_write_u32(out + offset, player->colour_rgba); offset += 4;
+    for (i = 0; i < 4; ++i) { mn_write_u16(out + offset, player->appearance[i]); offset += 2; }
+    memset(out + offset, 0, MN_PLAYER_NAME_LENGTH);
+    mn_copy_text((char *)(out + offset), MN_PLAYER_NAME_LENGTH, player->name);
+    offset += MN_PLAYER_NAME_LENGTH;
+    mn_write_float(out + offset, player->position.x); offset += 4;
+    mn_write_float(out + offset, player->position.y); offset += 4;
+    mn_write_float(out + offset, player->position.z); offset += 4;
+    mn_write_float(out + offset, player->rotation.x); offset += 4;
+    mn_write_float(out + offset, player->rotation.y); offset += 4;
+    mn_write_float(out + offset, player->rotation.z); offset += 4;
+    mn_write_float(out + offset, player->rotation.w); offset += 4;
+    mn_write_float(out + offset, player->velocity.x); offset += 4;
+    mn_write_float(out + offset, player->velocity.y); offset += 4;
+    mn_write_float(out + offset, player->velocity.z); offset += 4;
+}
+
+static int mn_sequence_is_newer(uint32_t candidate, uint32_t previous) {
+    uint32_t difference = candidate - previous;
+    return difference != 0u && difference < 0x80000000u;
+}
+
+static int mn_float_is_valid(float value) {
+    return isfinite((double)value) && fabs((double)value) <= 1000000.0;
+}
+static int mn_player_is_valid(const mn_player *player) {
+    return mn_float_is_valid(player->position.x) &&
+           mn_float_is_valid(player->position.y) &&
+           mn_float_is_valid(player->position.z) &&
+           mn_float_is_valid(player->rotation.x) &&
+           mn_float_is_valid(player->rotation.y) &&
+           mn_float_is_valid(player->rotation.z) &&
+           mn_float_is_valid(player->rotation.w) &&
+           mn_float_is_valid(player->velocity.x) &&
+           mn_float_is_valid(player->velocity.y) &&
+           mn_float_is_valid(player->velocity.z);
+}
+
+
+
+static int mn_decode_player(mn_player *player, const uint8_t *in) {
+    size_t offset = 0;
+    size_t i;
+    memset(player, 0, sizeof(*player));
+    player->id = mn_read_u32(in + offset); offset += 4;
+    player->score = (int32_t)mn_read_u32(in + offset); offset += 4;
+    player->flags = mn_read_u32(in + offset); offset += 4;
+    player->colour_rgba = mn_read_u32(in + offset); offset += 4;
+    for (i = 0; i < 4; ++i) { player->appearance[i] = mn_read_u16(in + offset); offset += 2; }
+    memcpy(player->name, in + offset, MN_PLAYER_NAME_LENGTH);
+    player->name[MN_PLAYER_NAME_LENGTH - 1] = '\0';
+    offset += MN_PLAYER_NAME_LENGTH;
+    player->position.x = mn_read_float(in + offset); offset += 4;
+    player->position.y = mn_read_float(in + offset); offset += 4;
+    player->position.z = mn_read_float(in + offset); offset += 4;
+    player->rotation.x = mn_read_float(in + offset); offset += 4;
+    player->rotation.y = mn_read_float(in + offset); offset += 4;
+    player->rotation.z = mn_read_float(in + offset); offset += 4;
+    player->rotation.w = mn_read_float(in + offset); offset += 4;
+    player->velocity.x = mn_read_float(in + offset); offset += 4;
+    player->velocity.y = mn_read_float(in + offset); offset += 4;
+    player->velocity.z = mn_read_float(in + offset); offset += 4;
+    return mn_player_is_valid(player);
+}
+
+static size_t mn_make_packet(uint8_t *out, uint8_t type, uint32_t app_id,
+                             uint32_t room_id, const void *payload,
+                             size_t payload_size) {
+    size_t total = MN_HEADER_SIZE + payload_size;
+    if (!out || total > MN_MAX_DATAGRAM_SIZE || payload_size > 65535u) return 0;
+    mn_write_u32(out, MN_MAGIC);
+    out[4] = MN_PROTOCOL_VERSION;
+    out[5] = type;
+    mn_write_u16(out + 6, (uint16_t)total);
+    mn_write_u32(out + 8, app_id);
+    mn_write_u32(out + 12, room_id);
+    if (payload_size && payload) memcpy(out + MN_HEADER_SIZE, payload, payload_size);
+    return total;
+}
+
+static void mn_send_to(mn_instance *instance, const struct sockaddr_in *to,
+                       const uint8_t *data, size_t size) {
+    if (instance && instance->socket != MN_BAD_SOCKET && to && data && size) {
+#ifdef _WIN32
+        (void)sendto(instance->socket, (const char *)data, (int)size, 0,
+                     (const struct sockaddr *)to, (int)sizeof(*to));
+#else
+        (void)sendto(instance->socket, (const char *)data, size, 0,
+                     (const struct sockaddr *)to, (socklen_t)sizeof(*to));
+#endif
+    }
+}
+
+static size_t mn_active_player_count(const mn_instance *instance) {
+    size_t count = instance->info.role == MN_ROLE_HOST ? 1u : 0u;
+    size_t i;
+    for (i = 0; i < MN_MAX_PLAYERS; ++i)
+        if (instance->peers[i].active) ++count;
+    return count;
+}
+
+static void mn_refresh_host_players(mn_instance *instance) {
+    size_t i, count = 0;
+    memset(instance->players, 0, sizeof(instance->players));
+    if (instance->info.role == MN_ROLE_HOST) instance->players[count++] = instance->local_player;
+    for (i = 0; i < MN_MAX_PLAYERS && count < MN_MAX_PLAYERS; ++i) {
+        if (instance->peers[i].active) instance->players[count++] = instance->peers[i].player;
+    }
+    instance->info.player_count = (uint8_t)count;
+}
+
+static void mn_send_offer(mn_instance *instance, const struct sockaddr_in *to) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[MN_OFFER_SIZE];
+    size_t size;
+    payload[0] = instance->info.player_count;
+    payload[1] = instance->info.max_players;
+    memset(payload + 2, 0, MN_ROOM_NAME_LENGTH + MN_PLAYER_NAME_LENGTH);
+    mn_copy_text((char *)(payload + 2), MN_ROOM_NAME_LENGTH, instance->info.room_name);
+    mn_copy_text((char *)(payload + 2 + MN_ROOM_NAME_LENGTH),
+                 MN_PLAYER_NAME_LENGTH, instance->info.local_name);
+    size = mn_make_packet(packet, MN_PKT_OFFER, instance->config.app_id,
+                          instance->info.room_id, payload, sizeof(payload));
+    mn_send_to(instance, to, packet, size);
+}
+
+
+
+static void mn_send_welcome(mn_instance *instance, const mn_peer *peer) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[MN_WELCOME_SIZE];
+    size_t size;
+    mn_write_u32(payload, peer->id);
+    mn_write_u64(payload + 4, peer->token);
+    payload[12] = instance->info.max_players;
+    memset(payload + 13, 0, MN_ROOM_NAME_LENGTH);
+    mn_copy_text((char *)(payload + 13), MN_ROOM_NAME_LENGTH, instance->info.room_name);
+    size = mn_make_packet(packet, MN_PKT_WELCOME, instance->config.app_id,
+                          instance->info.room_id, payload, sizeof(payload));
+    mn_send_to(instance, &peer->address, packet, size);
+}
+
+static void mn_send_snapshot_to(mn_instance *instance,
+                                const struct sockaddr_in *to) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[6u + MN_MAX_PLAYERS * MN_WIRE_PLAYER_SIZE];
+    size_t i, count = 0, size;
+    instance->snapshot_sequence++;
+    mn_write_u32(payload, instance->snapshot_sequence);
+    payload[5] = instance->info.match_started ? 1u : 0u;
+    mn_encode_player(payload + 6u + count * MN_WIRE_PLAYER_SIZE,
+                     &instance->local_player);
+    ++count;
+    for (i = 0; i < MN_MAX_PLAYERS && count < MN_MAX_PLAYERS; ++i) {
+        if (instance->peers[i].active) {
+            mn_encode_player(payload + 6u + count * MN_WIRE_PLAYER_SIZE,
+                             &instance->peers[i].player);
+            ++count;
+        }
+    }
+    payload[4] = (uint8_t)count;
+    size = mn_make_packet(packet, MN_PKT_SNAPSHOT, instance->config.app_id,
+                          instance->info.room_id, payload,
+                          6u + count * MN_WIRE_PLAYER_SIZE);
+    mn_send_to(instance, to, packet, size);
+}
+
+static void mn_broadcast_snapshot(mn_instance *instance) {
+    size_t i;
+    mn_refresh_host_players(instance);
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        if (instance->peers[i].active)
+            mn_send_snapshot_to(instance, &instance->peers[i].address);
+    }
+}
+
+static void mn_remove_peer(mn_instance *instance, mn_peer *peer,
+                           const char *reason) {
+    uint32_t player_id;
+    if (!peer || !peer->active) return;
+    player_id = peer->id;
+    mn_emit_simple_event(instance, MN_EVENT_PLAYER_LEFT, reason, player_id);
+    memset(peer, 0, sizeof(*peer));
+    mn_refresh_host_players(instance);
+}
+
+static void mn_add_room(mn_instance *instance, const struct sockaddr_in *from,
+                        uint32_t room_id, const uint8_t *payload) {
+    char ip[48];
+    size_t i;
+    mn_room room;
+    if (!inet_ntop(AF_INET, &from->sin_addr, ip, sizeof(ip))) return;
+    if (payload[1] < 2u || payload[1] > MN_MAX_PLAYERS || payload[0] == 0u ||
+        payload[0] > payload[1]) return;
+    memset(&room, 0, sizeof(room));
+    memcpy(room.name, payload + 2, MN_ROOM_NAME_LENGTH);
+    room.name[MN_ROOM_NAME_LENGTH - 1] = '\0';
+    memcpy(room.host_name, payload + 2 + MN_ROOM_NAME_LENGTH, MN_PLAYER_NAME_LENGTH);
+    room.host_name[MN_PLAYER_NAME_LENGTH - 1] = '\0';
+    mn_copy_text(room.address, sizeof(room.address), ip);
+    room.port = ntohs(from->sin_port);
+    room.player_count = payload[0];
+    room.max_players = payload[1];
+    room.room_id = room_id;
+    room.app_id = instance->config.app_id;
+    for (i = 0; i < instance->room_count; ++i) {
+        if (instance->rooms[i].room_id == room_id &&
+            strcmp(instance->rooms[i].address, ip) == 0) {
+            instance->rooms[i] = room;
+            return;
+        }
+    }
+    if (instance->room_count >= MN_MAX_ROOMS) return;
+    instance->rooms[instance->room_count++] = room;
+    {
+        mn_event event;
+        memset(&event, 0, sizeof(event));
+        event.type = MN_EVENT_ROOM_FOUND;
+        mn_copy_text(event.text, sizeof(event.text), room.name);
+        mn_push_event(instance, &event);
+    }
+}
+
+
+
+static void mn_send_discover_to(mn_instance *instance,
+                                  const struct sockaddr_in *destination) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    size_t size;
+    if (!instance || !destination) return;
+    size = mn_make_packet(packet, MN_PKT_DISCOVER, instance->config.app_id,
+                          0, NULL, 0);
+    mn_send_to(instance, destination, packet, size);
+}
+
+static void mn_send_discover(mn_instance *instance) {
+    struct sockaddr_in destination;
+    if (!instance || !instance->config.enable_broadcast) return;
+    memset(&destination, 0, sizeof(destination));
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(instance->config.port);
+    destination.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    mn_send_discover_to(instance, &destination);
+}
+
+static void mn_send_join(mn_instance *instance) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[MN_PLAYER_NAME_LENGTH];
+    size_t size;
+    memset(payload, 0, sizeof(payload));
+    mn_copy_text((char *)payload, sizeof(payload), instance->info.local_name);
+    size = mn_make_packet(packet, MN_PKT_JOIN, instance->config.app_id,
+                          0, payload, sizeof(payload));
+    mn_send_to(instance, &instance->server, packet, size);
+}
+
+static void mn_send_state(mn_instance *instance) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[12u + MN_WIRE_PLAYER_SIZE];
+    size_t size;
+    mn_write_u64(payload, instance->session_token);
+    instance->next_state_sequence++;
+    mn_write_u32(payload + 8, instance->next_state_sequence);
+    mn_encode_player(payload + 12, &instance->local_player);
+    size = mn_make_packet(packet, MN_PKT_STATE, instance->config.app_id,
+                          instance->info.room_id, payload, sizeof(payload));
+    mn_send_to(instance, &instance->server, packet, size);
+}
+
+static void mn_send_leave(mn_instance *instance) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[8];
+    size_t size;
+    mn_write_u64(payload, instance->session_token);
+    size = mn_make_packet(packet, MN_PKT_LEAVE, instance->config.app_id,
+                          instance->info.room_id, payload, sizeof(payload));
+    mn_send_to(instance, &instance->server, packet, size);
+}
+
+static void mn_emit_message(mn_instance *instance, uint32_t sender_id,
+                            uint16_t channel, const uint8_t *data, size_t size) {
+    mn_event event;
+    if (size > MN_MAX_MESSAGE_BYTES) return;
+    memset(&event, 0, sizeof(event));
+    event.type = MN_EVENT_MESSAGE;
+    event.player_id = sender_id;
+    event.channel = channel;
+    event.data_size = (uint16_t)size;
+    if (size) memcpy(event.data, data, size);
+    mn_push_event(instance, &event);
+}
+
+static void mn_forward_message(mn_instance *instance, uint32_t sender_id,
+                               uint32_t target_id, uint16_t channel,
+                               const uint8_t *data, size_t size) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[12u + MN_MAX_MESSAGE_BYTES];
+    size_t i, packet_size;
+    mn_write_u32(payload, sender_id);
+    mn_write_u32(payload + 4, target_id);
+    mn_write_u16(payload + 8, channel);
+    mn_write_u16(payload + 10, (uint16_t)size);
+    if (size) memcpy(payload + 12, data, size);
+    packet_size = mn_make_packet(packet, MN_PKT_MESSAGE,
+                                 instance->config.app_id, instance->info.room_id,
+                                 payload, 12u + size);
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        mn_peer *peer = &instance->peers[i];
+        if (!peer->active || peer->id == sender_id) continue;
+        if (target_id != 0 && target_id != peer->id) continue;
+        mn_send_to(instance, &peer->address, packet, packet_size);
+    }
+}
+
+static void mn_handle_host_message(mn_instance *instance, const uint8_t *payload,
+                                   size_t payload_size,
+                                   const struct sockaddr_in *from) {
+    uint64_t token;
+    uint32_t sender_id, target_id;
+    uint16_t channel, data_size;
+    mn_peer *peer;
+    if (payload_size < 20u) return;
+    token = mn_read_u64(payload);
+    sender_id = mn_read_u32(payload + 8);
+    target_id = mn_read_u32(payload + 12);
+    channel = mn_read_u16(payload + 16);
+    data_size = mn_read_u16(payload + 18);
+    if ((size_t)data_size > MN_MAX_MESSAGE_BYTES || payload_size != 20u + data_size)
+        return;
+    peer = mn_find_peer_token(instance, token);
+    if (!peer || !mn_same_address(&peer->address, from) || sender_id != peer->id) return;
+    if (peer->message_cooldown > 0.0f) return;
+    peer->message_cooldown = 0.08f;
+    peer->silence = 0.0f;
+    if (target_id != 0 && target_id != instance->info.local_player_id &&
+        !mn_find_peer_id(instance, target_id)) return;
+    mn_emit_message(instance, peer->id, channel, payload + 20, data_size);
+    mn_forward_message(instance, peer->id, target_id, channel,
+                        payload + 20, data_size);
+}
+
+
+
+static void mn_handle_client_message(mn_instance *instance, const uint8_t *payload,
+                                     size_t payload_size) {
+    uint32_t sender_id, target_id;
+    uint16_t channel, data_size;
+    if (payload_size < 12u) return;
+    sender_id = mn_read_u32(payload);
+    target_id = mn_read_u32(payload + 4);
+    channel = mn_read_u16(payload + 8);
+    data_size = mn_read_u16(payload + 10);
+    if ((size_t)data_size > MN_MAX_MESSAGE_BYTES || payload_size != 12u + data_size)
+        return;
+    if (target_id != 0 && target_id != instance->info.local_player_id) return;
+    mn_emit_message(instance, sender_id, channel, payload + 12, data_size);
+}
+
+static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
+                             size_t packet_size, const struct sockaddr_in *from) {
+    uint8_t type;
+    uint32_t app_id, room_id;
+    const uint8_t *payload;
+    size_t payload_size;
+    if (packet_size < MN_HEADER_SIZE) return;
+    if (mn_read_u32(packet) != MN_MAGIC || packet[4] != MN_PROTOCOL_VERSION ||
+        mn_read_u16(packet + 6) != packet_size) return;
+    type = packet[5];
+    app_id = mn_read_u32(packet + 8);
+    room_id = mn_read_u32(packet + 12);
+    if (app_id != instance->config.app_id) return;
+    payload = packet + MN_HEADER_SIZE;
+    payload_size = packet_size - MN_HEADER_SIZE;
+
+    if (type == MN_PKT_DISCOVER && payload_size == 0 &&
+        instance->info.role == MN_ROLE_HOST &&
+        instance->info.status == MN_STATUS_HOSTING) {
+        mn_send_offer(instance, from);
+        return;
+    }
+    if (type == MN_PKT_OFFER && payload_size == MN_OFFER_SIZE &&
+        instance->info.status == MN_STATUS_SEARCHING) {
+        mn_add_room(instance, from, room_id, payload);
+        return;
+    }
+
+    if (instance->info.role == MN_ROLE_HOST) {
+        if (type == MN_PKT_JOIN && room_id == 0 && payload_size == MN_PLAYER_NAME_LENGTH) {
+            mn_peer *peer = mn_find_peer_address(instance, from);
+            uint8_t name[MN_PLAYER_NAME_LENGTH];
+            size_t i;
+            memcpy(name, payload, sizeof(name));
+            name[sizeof(name) - 1] = '\0';
+            if (peer) {
+                peer->silence = 0.0f;
+                mn_send_welcome(instance, peer);
+                mn_send_snapshot_to(instance, from);
+                return;
+            }
+            if (mn_active_player_count(instance) >= instance->info.max_players) return;
+            for (i = 0; i < MN_MAX_PLAYERS && instance->peers[i].active; ++i) { }
+            if (i == MN_MAX_PLAYERS) return;
+            peer = &instance->peers[i];
+            memset(peer, 0, sizeof(*peer));
+            peer->active = 1;
+            peer->id = instance->next_player_id++;
+            peer->address = *from;
+            peer->player.id = peer->id;
+            peer->player.colour_rgba = 0xFFFFFFFFu;
+            peer->player.rotation.w = 1.0f;
+            memcpy(peer->player.name, name, sizeof(name));
+            peer->player.name[MN_PLAYER_NAME_LENGTH - 1] = '\0';
+            if (!mn_random_u64(&peer->token)) {
+                memset(peer, 0, sizeof(*peer));
+                mn_set_error(instance, "Secure random number generation failed");
+                return;
+            }
+            instance->info.player_count = (uint8_t)mn_active_player_count(instance);
+            {
+                mn_event event;
+                memset(&event, 0, sizeof(event));
+                event.type = MN_EVENT_PLAYER_JOINED;
+                event.player_id = peer->id;
+                event.player = peer->player;
+                mn_push_event(instance, &event);
+            }
+
+
+
+            mn_send_welcome(instance, peer);
+            mn_broadcast_snapshot(instance);
+            return;
+        }
+        if (room_id != instance->info.room_id) return;
+        if (type == MN_PKT_STATE && payload_size == 12u + MN_WIRE_PLAYER_SIZE) {
+            uint64_t token = mn_read_u64(payload);
+            uint32_t sequence = mn_read_u32(payload + 8);
+            mn_peer *peer = mn_find_peer_token(instance, token);
+            mn_player player;
+            if (!peer || !mn_same_address(&peer->address, from)) return;
+            if (peer->has_state_sequence &&
+                !mn_sequence_is_newer(sequence, peer->last_state_sequence)) return;
+            if (peer->state_cooldown > 0.0f) return;
+            if (!mn_decode_player(&player, payload + 12)) return;
+            peer->last_state_sequence = sequence;
+            peer->has_state_sequence = 1;
+            peer->state_cooldown = instance->config.heartbeat_seconds * 0.5f;
+            if (peer->state_cooldown < 0.01f) peer->state_cooldown = 0.01f;
+            peer->silence = 0.0f;
+            player.id = peer->id;
+            mn_copy_text(player.name, sizeof(player.name), peer->player.name);
+            peer->player = player;
+            return;
+        }
+        if (type == MN_PKT_LEAVE && payload_size == 8u) {
+            mn_peer *peer = mn_find_peer_token(instance, mn_read_u64(payload));
+            if (peer && mn_same_address(&peer->address, from)) {
+                mn_remove_peer(instance, peer, "Player left the room");
+                mn_broadcast_snapshot(instance);
+            }
+            return;
+        }
+        if (type == MN_PKT_MESSAGE) {
+            mn_handle_host_message(instance, payload, payload_size, from);
+            return;
+        }
+        return;
+    }
+
+    if (instance->info.role == MN_ROLE_CLIENT &&
+        mn_same_address(from, &instance->server)) {
+        instance->server_silence = 0.0f;
+        if (room_id != instance->info.room_id &&
+            !(type == MN_PKT_WELCOME && instance->info.status == MN_STATUS_CONNECTING)) return;
+        if (type == MN_PKT_WELCOME && payload_size == MN_WELCOME_SIZE &&
+            instance->info.status == MN_STATUS_CONNECTING) {
+            instance->info.local_player_id = mn_read_u32(payload);
+            instance->session_token = mn_read_u64(payload + 4);
+            instance->info.max_players = payload[12];
+            instance->info.room_id = room_id;
+            memcpy(instance->info.room_name, payload + 13, MN_ROOM_NAME_LENGTH);
+            instance->info.room_name[MN_ROOM_NAME_LENGTH - 1] = '\0';
+            instance->local_player.id = instance->info.local_player_id;
+            mn_copy_text(instance->local_player.name, sizeof(instance->local_player.name),
+                         instance->info.local_name);
+            instance->players[0] = instance->local_player;
+            instance->info.status = MN_STATUS_CONNECTED;
+            instance->info.player_count = 1;
+            mn_emit_simple_event(instance, MN_EVENT_CONNECTED, "Connected to room",
+                                 instance->info.local_player_id);
+            return;
+        }
+        if (type == MN_PKT_START && payload_size == 0) {
+            if (!instance->info.match_started) {
+                instance->info.match_started = 1;
+                mn_emit_simple_event(instance, MN_EVENT_MATCH_STARTED,
+                                     "Host started the match", 0);
+            }
+            return;
+        }
+        if (type == MN_PKT_SNAPSHOT && payload_size >= 6u) {
+            mn_player incoming[MN_MAX_PLAYERS];
+            uint32_t sequence = mn_read_u32(payload);
+            size_t count = payload[4], i, expected;
+            int was_started = instance->info.match_started;
+            if (instance->has_snapshot_sequence &&
+                !mn_sequence_is_newer(sequence, instance->last_snapshot_sequence)) return;
+            if (count == 0 || count > MN_MAX_PLAYERS) return;
+            expected = 6u + count * MN_WIRE_PLAYER_SIZE;
+            if (payload_size != expected || payload[5] > 1u) return;
+            memset(incoming, 0, sizeof(incoming));
+            for (i = 0; i < count; ++i) {
+                if (!mn_decode_player(&incoming[i], payload + 6u + i * MN_WIRE_PLAYER_SIZE))
+                    return;
+            }
+
+
+
+            for (i = 0; i < count; ++i) {
+                size_t old_index;
+                int found = 0;
+                if (incoming[i].id == instance->info.local_player_id) continue;
+                for (old_index = 0; old_index < instance->info.player_count; ++old_index) {
+                    if (instance->players[old_index].id == incoming[i].id) { found = 1; break; }
+                }
+                if (!found) {
+                    mn_event event;
+                    memset(&event, 0, sizeof(event));
+                    event.type = MN_EVENT_PLAYER_JOINED;
+                    event.player_id = incoming[i].id;
+                    event.player = incoming[i];
+                    mn_push_event(instance, &event);
+                }
+            }
+            for (i = 0; i < instance->info.player_count; ++i) {
+                size_t new_index;
+                uint32_t old_id = instance->players[i].id;
+                int found = 0;
+                if (old_id == 0 || old_id == instance->info.local_player_id) continue;
+                for (new_index = 0; new_index < count; ++new_index) {
+                    if (incoming[new_index].id == old_id) { found = 1; break; }
+                }
+                if (!found) mn_emit_simple_event(instance, MN_EVENT_PLAYER_LEFT,
+                                                  "Player left the room", old_id);
+            }
+            memset(instance->players, 0, sizeof(instance->players));
+            memcpy(instance->players, incoming, count * sizeof(mn_player));
+            instance->info.player_count = (uint8_t)count;
+            instance->info.match_started = payload[5];
+            instance->last_snapshot_sequence = sequence;
+            instance->has_snapshot_sequence = 1;
+            if (!was_started && instance->info.match_started)
+                mn_emit_simple_event(instance, MN_EVENT_MATCH_STARTED,
+                                     "Host started the match", 0);
+            return;
+        }
+        if (type == MN_PKT_MESSAGE) {
+            mn_handle_client_message(instance, payload, payload_size);
+            return;
+        }
+    }
+}
+
+void mn_config_init(mn_config *config) {
+    if (!config) return;
+    memset(config, 0, sizeof(*config));
+    config->port = MN_DEFAULT_PORT;
+    config->app_id = MN_DEFAULT_APP_ID;
+    config->max_players = MN_MAX_PLAYERS;
+    config->enable_broadcast = 1;
+    config->discovery_seconds = 3.0f;
+    config->heartbeat_seconds = 0.10f;
+    config->timeout_seconds = 8.0f;
+}
+
+mn_instance *mn_create(const mn_config *config) {
+    mn_instance *instance;
+    mn_config defaults;
+    mn_config_init(&defaults);
+    instance = (mn_instance *)calloc(1, sizeof(*instance));
+    if (!instance) return NULL;
+    instance->config = config ? *config : defaults;
+    if (instance->config.port == 0) instance->config.port = defaults.port;
+    if (instance->config.app_id == 0) instance->config.app_id = defaults.app_id;
+    if (instance->config.max_players < 2 || instance->config.max_players > MN_MAX_PLAYERS)
+        instance->config.max_players = MN_MAX_PLAYERS;
+    if (instance->config.discovery_seconds <= 0.0f) instance->config.discovery_seconds = defaults.discovery_seconds;
+    if (instance->config.heartbeat_seconds <= 0.0f) instance->config.heartbeat_seconds = defaults.heartbeat_seconds;
+    if (instance->config.timeout_seconds <= 0.0f) instance->config.timeout_seconds = defaults.timeout_seconds;
+    instance->socket = MN_BAD_SOCKET;
+#ifdef _WIN32
+    {
+        WSADATA winsock_data;
+        if (WSAStartup(MAKEWORD(2, 2), &winsock_data) != 0) {
+            free(instance);
+            return NULL;
+        }
+    }
+#endif
+    instance->socket = mn_open_socket(instance, 0);
+    if (instance->socket == MN_BAD_SOCKET) {
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        free(instance);
+        return NULL;
+    }
+
+
+    instance->ready = 1;
+    instance->info.status = MN_STATUS_OFFLINE;
+    instance->info.role = MN_ROLE_NONE;
+    instance->info.app_id = instance->config.app_id;
+    instance->info.max_players = instance->config.max_players;
+    instance->info.local_port = instance->local_port;
+    instance->local_player.colour_rgba = 0xFFFFFFFFu;
+    instance->local_player.rotation.w = 1.0f;
+    return instance;
+}
+
+void mn_destroy(mn_instance *instance) {
+    if (!instance) return;
+    mn_leave(instance);
+    mn_close_current_socket(instance);
+#ifdef _WIN32
+    WSACleanup();
+#endif
+    memset(instance, 0, sizeof(*instance));
+    free(instance);
+}
+
+int mn_host(mn_instance *instance, const char *player_name,
+            const char *room_name, uint8_t max_players) {
+    mn_socket new_socket;
+    uint32_t room_id;
+    if (!instance || !instance->ready) return 0;
+    if (instance->info.role == MN_ROLE_HOST) mn_leave(instance);
+    if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    max_players = max_players < 2 ? 2 : (max_players > MN_MAX_PLAYERS ? MN_MAX_PLAYERS : max_players);
+    mn_close_current_socket(instance);
+    new_socket = mn_open_socket(instance, instance->config.port);
+    if (new_socket == MN_BAD_SOCKET) {
+        instance->socket = mn_open_socket(instance, 0);
+        instance->info.local_port = instance->local_port;
+        return 0;
+    }
+    instance->socket = new_socket;
+    instance->info.local_port = instance->local_port;
+    memset(instance->peers, 0, sizeof(instance->peers));
+    memset(instance->players, 0, sizeof(instance->players));
+    instance->room_count = 0;
+    instance->session_token = 0;
+    instance->next_state_sequence = 0;
+    instance->snapshot_sequence = 0;
+    instance->last_snapshot_sequence = 0;
+    instance->has_snapshot_sequence = 0;
+    instance->next_player_id = 2;
+    instance->info.role = MN_ROLE_HOST;
+    instance->info.status = MN_STATUS_HOSTING;
+    instance->info.local_player_id = 1;
+    instance->info.room_id = 0;
+    if (!mn_random_u32(&room_id)) {
+        mn_set_error(instance, "Secure random number generation failed");
+        mn_leave(instance);
+        return 0;
+    }
+    instance->info.room_id = room_id;
+    instance->info.max_players = max_players;
+    instance->info.match_started = 0;
+    mn_copy_text(instance->info.local_name, sizeof(instance->info.local_name), player_name);
+    mn_copy_text(instance->info.room_name, sizeof(instance->info.room_name), room_name);
+    memset(&instance->local_player, 0, sizeof(instance->local_player));
+    instance->local_player.id = 1;
+    instance->local_player.colour_rgba = 0xFFFFFFFFu;
+    instance->local_player.rotation.w = 1.0f;
+    mn_copy_text(instance->local_player.name, sizeof(instance->local_player.name), player_name);
+    instance->info.last_error[0] = '\0';
+    instance->snapshot_tick = 0.0f;
+    mn_refresh_host_players(instance);
+    return 1;
+}
+
+int mn_discover(mn_instance *instance) {
+    if (!instance || !instance->ready) return 0;
+    if (!instance->config.enable_broadcast) {
+        mn_set_error(instance, "Broadcast discovery is disabled; use mn_discover_at or mn_join");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_HOST) {
+        mn_set_error(instance, "Leave the hosted room before searching");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    instance->room_count = 0;
+    memset(instance->rooms, 0, sizeof(instance->rooms));
+    instance->discovery_left = instance->config.discovery_seconds;
+    instance->discovery_tick = 0.0f;
+    instance->info.role = MN_ROLE_NONE;
+    instance->info.status = MN_STATUS_SEARCHING;
+    instance->info.last_error[0] = '\0';
+    instance->discovery_target_valid = 0;
+    mn_send_discover(instance);
+    return 1;
+}
+
+int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname,
+                   uint16_t port) {
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    struct sockaddr_in destination;
+    int resolve_result;
+    if (!instance || !instance->ready) return 0;
+    if (!ipv4_or_hostname || !ipv4_or_hostname[0]) {
+        mn_set_error(instance, "Discovery target address is empty");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_HOST) {
+        mn_set_error(instance, "Leave the hosted room before searching");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    resolve_result = getaddrinfo(ipv4_or_hostname, NULL, &hints, &result);
+    if (resolve_result != 0 || !result) {
+        if (result) freeaddrinfo(result);
+        mn_set_error(instance, "Could not resolve the discovery target as IPv4");
+        return 0;
+    }
+    memset(&destination, 0, sizeof(destination));
+    memcpy(&destination, result->ai_addr, sizeof(destination));
+    destination.sin_port = htons(port ? port : instance->config.port);
+    freeaddrinfo(result);
+
+    instance->room_count = 0;
+    memset(instance->rooms, 0, sizeof(instance->rooms));
+    instance->discovery_left = instance->config.discovery_seconds;
+    instance->discovery_tick = 0.0f;
+    instance->info.role = MN_ROLE_NONE;
+    instance->info.status = MN_STATUS_SEARCHING;
+    instance->info.last_error[0] = '\0';
+    instance->discovery_target = destination;
+    instance->discovery_target_valid = 1;
+    mn_send_discover_to(instance, &instance->discovery_target);
+    return 1;
+}
+
+
+
+void mn_stop_discovery(mn_instance *instance) {
+    if (!instance || instance->info.status != MN_STATUS_SEARCHING) return;
+    instance->info.status = MN_STATUS_OFFLINE;
+    instance->info.role = MN_ROLE_NONE;
+    instance->discovery_left = 0.0f;
+    instance->discovery_target_valid = 0;
+}
+
+size_t mn_get_rooms(const mn_instance *instance, mn_room *rooms, size_t capacity) {
+    size_t count;
+    if (!instance) return 0;
+    count = instance->room_count < capacity ? instance->room_count : capacity;
+    if (rooms && count) memcpy(rooms, instance->rooms, count * sizeof(mn_room));
+    return instance->room_count;
+}
+
+int mn_join(mn_instance *instance, const char *host, uint16_t port,
+            const char *player_name) {
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    struct sockaddr_in server;
+    int resolve_result;
+    if (!instance || !instance->ready) return 0;
+    if (!host || !host[0]) {
+        mn_set_error(instance, "Host address is empty");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_HOST) {
+        mn_set_error(instance, "Leave the hosted room before joining another room");
+        return 0;
+    }
+    if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    resolve_result = getaddrinfo(host, NULL, &hints, &result);
+    if (resolve_result != 0 || !result) {
+        mn_set_error(instance, "Could not resolve the host as an IPv4 address");
+        if (result) freeaddrinfo(result);
+        return 0;
+    }
+    memset(&server, 0, sizeof(server));
+    memcpy(&server, result->ai_addr, sizeof(server));
+    server.sin_port = htons(port ? port : instance->config.port);
+    freeaddrinfo(result);
+    instance->server = server;
+    instance->discovery_target_valid = 0;
+    instance->next_state_sequence = 0;
+    instance->last_snapshot_sequence = 0;
+    instance->has_snapshot_sequence = 0;
+    mn_copy_text(instance->info.local_name, sizeof(instance->info.local_name), player_name);
+    mn_copy_text(instance->local_player.name, sizeof(instance->local_player.name), player_name);
+    instance->local_player.id = 0;
+    if (instance->local_player.colour_rgba == 0) instance->local_player.colour_rgba = 0xFFFFFFFFu;
+    if (instance->local_player.rotation.w == 0.0f) instance->local_player.rotation.w = 1.0f;
+    instance->info.role = MN_ROLE_CLIENT;
+    instance->info.status = MN_STATUS_CONNECTING;
+    instance->info.local_player_id = 0;
+    instance->info.room_id = 0;
+    instance->info.player_count = 0;
+    instance->info.match_started = 0;
+    instance->info.max_players = instance->config.max_players;
+    instance->info.room_name[0] = '\0';
+    instance->session_token = 0;
+    instance->connect_elapsed = 0.0f;
+    instance->server_silence = 0.0f;
+    instance->heartbeat_tick = 0.0f;
+    instance->info.last_error[0] = '\0';
+    instance->discovery_target_valid = 0;
+    memset(instance->players, 0, sizeof(instance->players));
+    mn_send_join(instance);
+    return 1;
+}
+
+int mn_join_room(mn_instance *instance, const mn_room *room,
+                 const char *player_name) {
+    if (!room) return 0;
+    return mn_join(instance, room->address, room->port, player_name);
+}
+
+int mn_start_match(mn_instance *instance) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    size_t size, i;
+    if (!instance || !instance->ready || instance->info.role != MN_ROLE_HOST ||
+        instance->info.status != MN_STATUS_HOSTING) {
+        if (instance) mn_set_error(instance, "Only the room host can start the match");
+        return 0;
+    }
+    if (instance->info.match_started) return 1;
+    instance->info.match_started = 1;
+    size = mn_make_packet(packet, MN_PKT_START, instance->config.app_id,
+                          instance->info.room_id, NULL, 0);
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        if (instance->peers[i].active)
+            mn_send_to(instance, &instance->peers[i].address, packet, size);
+    }
+
+
+    mn_emit_simple_event(instance, MN_EVENT_MATCH_STARTED, "Host started the match", 0);
+    return 1;
+}
+
+void mn_leave(mn_instance *instance) {
+    mn_role previous_role;
+    if (!instance || !instance->ready) return;
+    previous_role = instance->info.role;
+    if (previous_role == MN_ROLE_CLIENT && instance->info.status == MN_STATUS_CONNECTED)
+        mn_send_leave(instance);
+    if (previous_role == MN_ROLE_HOST) {
+        mn_close_current_socket(instance);
+        instance->socket = mn_open_socket(instance, 0);
+        instance->info.local_port = instance->local_port;
+    }
+    if (previous_role == MN_ROLE_CLIENT && instance->info.status == MN_STATUS_CONNECTED)
+        mn_emit_simple_event(instance, MN_EVENT_DISCONNECTED, "Left the room", instance->info.local_player_id);
+    memset(instance->peers, 0, sizeof(instance->peers));
+    memset(instance->players, 0, sizeof(instance->players));
+    memset(&instance->local_player, 0, sizeof(instance->local_player));
+    instance->local_player.colour_rgba = 0xFFFFFFFFu;
+    instance->local_player.rotation.w = 1.0f;
+    instance->info.role = MN_ROLE_NONE;
+    instance->info.status = MN_STATUS_OFFLINE;
+    instance->info.local_player_id = 0;
+    instance->info.room_id = 0;
+    instance->info.player_count = 0;
+    instance->info.max_players = instance->config.max_players;
+    instance->info.match_started = 0;
+    instance->info.room_name[0] = '\0';
+    instance->info.local_name[0] = '\0';
+    instance->info.last_error[0] = '\0';
+    instance->session_token = 0;
+    instance->next_state_sequence = 0;
+    instance->snapshot_sequence = 0;
+    instance->last_snapshot_sequence = 0;
+    instance->has_snapshot_sequence = 0;
+    instance->discovery_target_valid = 0;
+    memset(&instance->discovery_target, 0, sizeof(instance->discovery_target));
+    instance->room_count = 0;
+    instance->discovery_left = 0.0f;
+    instance->discovery_target_valid = 0;
+    memset(&instance->discovery_target, 0, sizeof(instance->discovery_target));
+    instance->connect_elapsed = 0.0f;
+    instance->server_silence = 0.0f;
+}
+
+int mn_set_local_player(mn_instance *instance, const mn_player *player) {
+    if (!instance || !player || !mn_player_is_valid(player)) return 0;
+    instance->local_player = *player;
+    instance->local_player.id = instance->info.local_player_id;
+    mn_copy_text(instance->local_player.name, sizeof(instance->local_player.name),
+                 instance->info.local_name);
+    if (instance->info.role == MN_ROLE_HOST) mn_refresh_host_players(instance);
+    return 1;
+}
+
+void mn_get_info(const mn_instance *instance, mn_info *out_info) {
+    if (instance && out_info) *out_info = instance->info;
+}
+
+size_t mn_get_players(const mn_instance *instance, mn_player *players, size_t capacity) {
+    size_t count;
+    if (!instance) return 0;
+    count = instance->info.player_count < capacity ? instance->info.player_count : capacity;
+    if (players && count) memcpy(players, instance->players, count * sizeof(mn_player));
+    return instance->info.player_count;
+}
+
+int mn_get_player(const mn_instance *instance, uint32_t player_id, mn_player *out_player) {
+    size_t i;
+    if (!instance || !out_player || player_id == 0) return 0;
+    for (i = 0; i < instance->info.player_count && i < MN_MAX_PLAYERS; ++i) {
+        if (instance->players[i].id == player_id) {
+            *out_player = instance->players[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int mn_poll_event(mn_instance *instance, mn_event *out_event) {
+    if (!instance || !out_event || instance->event_count == 0) return 0;
+    *out_event = instance->events[instance->event_head];
+    memset(&instance->events[instance->event_head], 0, sizeof(mn_event));
+    instance->event_head = (instance->event_head + 1u) % MN_EVENT_QUEUE_CAPACITY;
+    instance->event_count--;
+    return 1;
+}
+
+int mn_send_message(mn_instance *instance, uint32_t target_player_id,
+                    uint16_t channel, const void *data, size_t size) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[20u + MN_MAX_MESSAGE_BYTES];
+    size_t packet_size;
+    if (!instance || !instance->ready || size > MN_MAX_MESSAGE_BYTES ||
+        (size > 0 && !data)) return 0;
+    if (instance->info.role == MN_ROLE_HOST && instance->info.status == MN_STATUS_HOSTING) {
+        if (target_player_id != 0 && target_player_id != instance->info.local_player_id &&
+            !mn_find_peer_id(instance, target_player_id)) return 0;
+        mn_emit_message(instance, instance->info.local_player_id, channel,
+                        (const uint8_t *)data, size);
+        mn_forward_message(instance, instance->info.local_player_id, target_player_id,
+                           channel, (const uint8_t *)data, size);
+        return 1;
+    }
+    if (instance->info.role != MN_ROLE_CLIENT ||
+        instance->info.status != MN_STATUS_CONNECTED || target_player_id != 0)
+        return 0;
+    mn_write_u64(payload, instance->session_token);
+    mn_write_u32(payload + 8, instance->info.local_player_id);
+    mn_write_u32(payload + 12, target_player_id);
+    mn_write_u16(payload + 16, channel);
+    mn_write_u16(payload + 18, (uint16_t)size);
+    if (size) memcpy(payload + 20, data, size);
+    packet_size = mn_make_packet(packet, MN_PKT_MESSAGE, instance->config.app_id,
+                                 instance->info.room_id, payload, 20u + size);
+    mn_emit_message(instance, instance->info.local_player_id, channel,
+                    (const uint8_t *)data, size);
+
+
+
+    mn_send_to(instance, &instance->server, packet, packet_size);
+    return packet_size != 0;
+}
+
+void mn_update(mn_instance *instance, float dt_seconds) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    struct sockaddr_in from;
+    mn_socklen from_length;
+    int received;
+    size_t i;
+    float dt = dt_seconds;
+    if (!instance || !instance->ready || instance->socket == MN_BAD_SOCKET) return;
+    if (!mn_float_is_valid(dt) || dt < 0.0f) dt = 0.0f;
+    if (dt > 0.25f) dt = 0.25f;
+
+    for (;;) {
+        from_length = (mn_socklen)sizeof(from);
+        received = (int)recvfrom(instance->socket, (char *)packet,
+                                 (int)sizeof(packet), 0,
+                                 (struct sockaddr *)&from, &from_length);
+        if (received <= 0) break;
+        mn_handle_packet(instance, packet, (size_t)received, &from);
+    }
+
+    if (instance->info.status == MN_STATUS_SEARCHING) {
+        instance->discovery_left -= dt;
+        instance->discovery_tick -= dt;
+        if (instance->discovery_left > 0.0f && instance->discovery_tick <= 0.0f) {
+            if (instance->discovery_target_valid)
+                mn_send_discover_to(instance, &instance->discovery_target);
+            else
+                mn_send_discover(instance);
+            instance->discovery_tick = 0.5f;
+        }
+        if (instance->discovery_left <= 0.0f) {
+            instance->info.status = MN_STATUS_OFFLINE;
+            instance->info.role = MN_ROLE_NONE;
+            instance->discovery_target_valid = 0;
+            memset(&instance->discovery_target, 0, sizeof(instance->discovery_target));
+        }
+    }
+
+    if (instance->info.role == MN_ROLE_CLIENT &&
+        instance->info.status == MN_STATUS_CONNECTING) {
+        instance->connect_elapsed += dt;
+        if (instance->connect_elapsed > MN_CONNECT_TIMEOUT) {
+            instance->info.role = MN_ROLE_NONE;
+            instance->info.status = MN_STATUS_OFFLINE;
+            mn_set_error(instance, "Connection timed out");
+        } else {
+            instance->heartbeat_tick -= dt;
+            if (instance->heartbeat_tick <= 0.0f) {
+                mn_send_join(instance);
+                instance->heartbeat_tick = 0.5f;
+            }
+        }
+    } else if (instance->info.role == MN_ROLE_CLIENT &&
+               instance->info.status == MN_STATUS_CONNECTED) {
+        instance->server_silence += dt;
+        if (instance->server_silence > instance->config.timeout_seconds) {
+            uint32_t player_id = instance->info.local_player_id;
+            instance->info.role = MN_ROLE_NONE;
+            instance->info.status = MN_STATUS_OFFLINE;
+            instance->info.player_count = 0;
+            instance->info.match_started = 0;
+            memset(instance->players, 0, sizeof(instance->players));
+            mn_emit_simple_event(instance, MN_EVENT_DISCONNECTED,
+                                 "Host disconnected", player_id);
+            mn_set_error(instance, "Host disconnected");
+        } else {
+            instance->heartbeat_tick -= dt;
+            if (instance->heartbeat_tick <= 0.0f) {
+                mn_send_state(instance);
+                instance->heartbeat_tick = instance->config.heartbeat_seconds;
+            }
+
+
+
+        }
+    }
+
+    if (instance->info.role == MN_ROLE_HOST) {
+        for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+            if (instance->peers[i].active) {
+                instance->peers[i].silence += dt;
+                instance->peers[i].state_cooldown -= dt;
+                instance->peers[i].message_cooldown -= dt;
+                if (instance->peers[i].state_cooldown < 0.0f)
+                    instance->peers[i].state_cooldown = 0.0f;
+                if (instance->peers[i].message_cooldown < 0.0f)
+                    instance->peers[i].message_cooldown = 0.0f;
+                if (instance->peers[i].silence > instance->config.timeout_seconds) {
+                    mn_remove_peer(instance, &instance->peers[i], "Player timed out");
+                    mn_broadcast_snapshot(instance);
+                }
+            }
+        }
+        instance->snapshot_tick -= dt;
+        if (instance->snapshot_tick <= 0.0f) {
+            mn_broadcast_snapshot(instance);
+            instance->snapshot_tick = instance->config.heartbeat_seconds;
+        }
+    }
+}
+
+int mn_is_host(const mn_instance *instance) {
+    return instance && instance->info.role == MN_ROLE_HOST &&
+           instance->info.status == MN_STATUS_HOSTING;
+}
+int mn_is_connected(const mn_instance *instance) {
+    return instance && (instance->info.status == MN_STATUS_CONNECTED ||
+        instance->info.status == MN_STATUS_HOSTING);
+}
+const char *mn_version(void) { return MN_VERSION_STRING; }
