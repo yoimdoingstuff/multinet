@@ -15,6 +15,7 @@ extern "C" {
 #define MN_PLAYER_NAME_LENGTH 24u
 #define MN_ROOM_NAME_LENGTH 32u
 #define MN_MAX_MESSAGE_BYTES 768u
+#define MN_MAX_RELIABLE_PENDING 64u
 #define MN_DEFAULT_PORT 27890u
 #define MN_DEFAULT_APP_ID 0x4D4E5431u /* "MNT1" */
 
@@ -80,6 +81,9 @@ typedef struct mn_info {
     char room_name[MN_ROOM_NAME_LENGTH];
     char local_name[MN_PLAYER_NAME_LENGTH];
     char last_error[160];
+    float ping_ms;
+    uint8_t ping_available;
+    uint8_t ping_pending;
 } mn_info;
 
 typedef struct mn_config {
@@ -193,10 +197,18 @@ int mn_poll_event(mn_instance *instance, mn_event *out_event);
    Messages are best-effort datagrams, limited to MN_MAX_MESSAGE_BYTES. */
 int mn_send_message(mn_instance *instance, uint32_t target_player_id,
                     uint16_t channel, const void *data, size_t size);
+/* Queued, acknowledged application message with automatic retransmission.
+   Clients send to the host (target 0); hosts may target one player or broadcast. */
+int mn_send_reliable_message(mn_instance *instance, uint32_t target_player_id,
+                             uint16_t channel, const void *data, size_t size);
 
 /* Convenience status helpers. */
 int mn_is_host(const mn_instance *instance);
 int mn_is_connected(const mn_instance *instance);
+/* Measure round-trip latency: clients pass target 0 to ping the host; the host
+   passes a connected player ID to ping that player. Read ping_ms in mn_info. */
+int mn_ping(mn_instance *instance, uint32_t target_player_id);
+
 const char *mn_version(void);
 
 #ifdef __cplusplus

@@ -7,7 +7,7 @@ Every datagram begins with a 16-byte header:
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 4 | ASCII magic `MNET` |
-| 4 | 1 | Protocol version (`2`) |
+| 4 | 1 | Protocol version (`3`) |
 | 5 | 1 | Packet type |
 | 6 | 2 | Total datagram size, including header |
 | 8 | 4 | Application ID |
@@ -15,7 +15,7 @@ Every datagram begins with a 16-byte header:
 
 Integers are encoded in big-endian byte order. Float fields are 32-bit IEEE-754 values encoded using their bit representation in big-endian order. The maximum supported UDP datagram size is 1472 bytes. No compiler-specific structure packing or host-endian struct dumps are used.
 
-Packet types are discovery, offer, join, welcome, player state, snapshot, leave, match start and application message. Version and app ID are checked before a packet is handled. Payload lengths are checked against the exact expected size before fields are read. Version 2 adds a 32-bit sequence number to client player-state packets and host snapshots; receivers ignore duplicated, stale or reordered state/snapshot packets.
+Packet types are discovery, offer, join, welcome, player state, snapshot, leave, match start, best-effort application message, reliable application message, reliable acknowledgement, ping request and ping response. Version and app ID are checked before a packet is handled. Payload lengths are checked against the exact expected size before fields are read. Version 2 added a 32-bit sequence number to client player-state packets and host snapshots; receivers ignore duplicated, stale or reordered state/snapshot packets. Version 3 adds reliable application messages and ping/latency packets.
 
 A player snapshot contains a count, match-started flag and up to 16 fixed-size player records. A player record contains ID, score, flags, packed RGBA colour, four appearance identifiers, a fixed-size name, position, quaternion rotation and velocity.
 
@@ -27,7 +27,7 @@ The token is a basic session credential, not encryption. Traffic is not confiden
 
 ## Delivery and authority
 
-Player states are periodic snapshots. They are not individually acknowledged. Custom messages are best-effort UDP datagrams and may be lost, duplicated or reordered. Player-state updates and host snapshots include wrap-safe sequence numbers, and the host applies a simple per-peer state/message cooldown. Custom application messages remain best-effort and do not have acknowledgements, retransmission or delivery IDs. Add those features before relying on messages for persistent inventory, purchases, match results or other state that must not be lost.
+Player states are periodic snapshots. They are not individually acknowledged. Custom messages are best-effort UDP datagrams and may be lost, duplicated or reordered. Player-state updates and host snapshots include wrap-safe sequence numbers, and the host applies a simple per-peer state/message cooldown. Best-effort application messages remain unacknowledged. The reliable channel adds message IDs, ACK packets, bounded retransmission and duplicate suppression. A client-to-host reliable call confirms delivery to the host; the host then independently queues delivery to the other room members. Pending deliveries are held in a finite in-memory queue and are not persisted across disconnects or process restarts. Ping packets measure one outstanding round trip at a time and expire after five seconds.
 
 The host relays client-reported player state. Game code must treat it as untrusted and independently validate speed, position, score changes, hole completion and any gameplay-affecting action. Cosmetic identifiers should never confer physics or visibility advantages.
 
@@ -40,6 +40,6 @@ Discovery uses IPv4 subnet broadcast on the configured UDP port. Manual IPv4/hos
 - Sequence numbers and replay/out-of-order handling.
 - Per-peer packet/message rate limits and maximum state-change thresholds.
 - Host-side authoritative input/shot validation and match-result verification.
-- Optional reliable message channel with acknowledgement/retry and delivery IDs.
+- Optional encrypted and authenticated transport for untrusted networks.
 - IPv6 and standards-based service discovery.
 - Explicit player identity/pairing and encrypted peer authentication for untrusted networks.

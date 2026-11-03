@@ -23,7 +23,7 @@ The default app ID is `MN_DEFAULT_APP_ID`. Two games using different IDs will no
 - `mn_start_match()` is host-only. Clients receive `MN_EVENT_MATCH_STARTED` and the match-started field in `mn_info`.
 - `mn_leave()` leaves the current room or stops discovery. `mn_destroy()` releases the socket and the instance.
 
-The API is asynchronous after `mn_join()` returns: the caller must continue calling `mn_update()` and watch `mn_get_info()` or the event queue until connected or timed out.
+The API is asynchronous after `mn_join()` returns: the caller must continue calling `mn_update()` and watch `mn_get_info()` or the event queue until connected or timed out. Once connected, call `mn_ping(instance, 0)` on a client to measure its round trip to the host, or `mn_ping(instance, player_id)` on the host to measure one connected client. `mn_info.ping_ms`, `ping_available` and `ping_pending` expose the latest result and request state; requests time out after five seconds.
 
 ## Main loop
 
@@ -32,6 +32,8 @@ Call `mn_update(instance, dt_seconds)` regularly, ideally once per game frame. S
 Call `mn_set_local_player()` with the latest local state. The host relays client state to the room in periodic snapshots. Use `mn_get_info()` for session details, `mn_get_players()` to copy the current roster, and `mn_get_player()` for ID-based lookup.
 
 For an application-defined event stream, call `mn_send_message()`. Channel IDs are chosen by the game. A target ID of zero broadcasts to the room; host code may also target one player ID. Clients send to the host, which relays the message to matching recipients. Messages are best-effort and limited to `MN_MAX_MESSAGE_BYTES`.
+
+Use `mn_send_reliable_message()` for lobby commands, ready state, match results and other events that must arrive. It queues each delivery, assigns a message ID, waits for an acknowledgement, retransmits on timeout and suppresses duplicate deliveries. Clients send to the host (target 0); the host may target a player or broadcast. The bounded queue holds up to `MN_MAX_RELIABLE_PENDING` pending recipient deliveries. If the queue is full, the call fails and the application should retry later. After the retry limit, `MN_EVENT_ERROR` reports the failed delivery. A client-to-host ACK confirms delivery to the host; the host independently queues fan-out to the other room members. This is reliable delivery while the peer remains reachable, not durable storage across disconnects or process restarts.
 
 Drain `mn_poll_event()` each frame or on a regular tick. Events are FIFO and include connection changes, player joins/leaves, room discovery, match start, application messages and errors. The queue has a finite capacity; drain it regularly to avoid dropping older events under heavy traffic.
 

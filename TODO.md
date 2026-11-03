@@ -14,7 +14,7 @@
 
 - [x] Add packet sequence numbers and stale/out-of-order snapshot rejection.
 - [x] Add basic per-peer cooldown rate limits for state updates and application messages.
-- [ ] Add a reliable message API with acknowledgement, retry and delivery IDs.
+- [x] Add a reliable message API with acknowledgement, retry and delivery IDs.
 - [ ] Validate peer-controlled state against configurable bounds and application callbacks.
 - [ ] Add an explicit allow-list / pairing flow for nearby devices.
 - [ ] Add optional encrypted and authenticated transport for untrusted networks.
@@ -25,10 +25,11 @@
 
 - [ ] Add standards-based mDNS/DNS-SD discovery.
 - [ ] Add discovery tests across isolated local interfaces where CI permits.
-- [ ] Add a connection-quality / ping measurement API.
+- [x] Add basic client-to-host and host-to-client ping/latency measurement.
 - [x] Enumerate OS IPv4 adapters and support explicit binding for Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP interfaces.
 - [ ] Add native Bluetooth RFCOMM support as an optional transport backend.
 - [ ] Add IPv6 transport.
+- [ ] Add TCP as an optional direct-connect transport for networks where UDP is unavailable.
 
 ## Integration and packaging
 

@@ -39,7 +39,7 @@ typedef socklen_t mn_socklen;
 #endif
 
 #define MN_MAGIC 0x4D4E4554u /* "MNET" */
-#define MN_PROTOCOL_VERSION 2u
+#define MN_PROTOCOL_VERSION 3u
 #define MN_HEADER_SIZE 16u
 #define MN_MAX_DATAGRAM_SIZE 1472u
 #define MN_EVENT_QUEUE_CAPACITY 128u
@@ -47,6 +47,11 @@ typedef socklen_t mn_socklen;
 #define MN_OFFER_SIZE (2u + MN_ROOM_NAME_LENGTH + MN_PLAYER_NAME_LENGTH)
 #define MN_WELCOME_SIZE (4u + 8u + 1u + MN_ROOM_NAME_LENGTH)
 #define MN_CONNECT_TIMEOUT 10.0f
+#define MN_MAX_RELIABLE_PENDING 64u
+#define MN_RELIABLE_RETRY_SECONDS 0.30f
+#define MN_RELIABLE_MAX_ATTEMPTS 8u
+#define MN_PING_TIMEOUT_SECONDS 5.0f
+#define MN_RELIABLE_SEEN_IDS 16u
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(float) == 4, "MultiNet requires 32-bit floats");
@@ -63,7 +68,11 @@ enum mn_packet_type {
     MN_PKT_SNAPSHOT,
     MN_PKT_LEAVE,
     MN_PKT_START,
-    MN_PKT_MESSAGE
+    MN_PKT_MESSAGE,
+    MN_PKT_RELIABLE,
+    MN_PKT_RELIABLE_ACK,
+    MN_PKT_PING,
+    MN_PKT_PONG
 };
 
 typedef struct mn_peer {
@@ -78,6 +87,28 @@ typedef struct mn_peer {
     struct sockaddr_in address;
     mn_player player;
 } mn_peer;
+
+
+typedef struct mn_reliable_entry {
+    int active;
+    uint32_t peer_id;       /* 0 means the client is sending to its host. */
+    uint32_t sender_id;
+    uint32_t target_id;
+    uint32_t message_id;
+    uint16_t channel;
+    uint16_t data_size;
+    uint8_t attempts;
+    float retry_elapsed;
+    uint8_t data[MN_MAX_MESSAGE_BYTES];
+} mn_reliable_entry;
+
+typedef struct mn_seen_reliable {
+    uint32_t sender_id;
+    uint32_t message_ids[MN_RELIABLE_SEEN_IDS];
+    uint8_t count;
+    uint8_t next;
+    uint32_t age;
+} mn_seen_reliable;
 
 struct mn_instance {
     int ready;
@@ -106,6 +137,14 @@ struct mn_instance {
     uint32_t snapshot_sequence;
     uint32_t last_snapshot_sequence;
     int has_snapshot_sequence;
+    uint32_t next_reliable_id;
+    uint32_t reliable_seen_age;
+    uint32_t ping_sequence;
+    uint32_t ping_pending_id;
+    uint32_t ping_pending_target;
+    float ping_elapsed;
+    mn_reliable_entry reliable[MN_MAX_RELIABLE_PENDING];
+    mn_seen_reliable reliable_seen[MN_MAX_PLAYERS];
     mn_event events[MN_EVENT_QUEUE_CAPACITY];
     size_t event_head;
     size_t event_count;
@@ -689,6 +728,14 @@ static void mn_remove_peer(mn_instance *instance, mn_peer *peer,
     if (!peer || !peer->active) return;
     player_id = peer->id;
     mn_emit_simple_event(instance, MN_EVENT_PLAYER_LEFT, reason, player_id);
+    {
+        size_t i;
+        for (i = 0; i < MN_MAX_RELIABLE_PENDING; ++i) {
+            if (instance->reliable[i].active &&
+                instance->reliable[i].peer_id == player_id)
+                memset(&instance->reliable[i], 0, sizeof(instance->reliable[i]));
+        }
+    }
     memset(peer, 0, sizeof(*peer));
     mn_refresh_host_players(instance);
 }
@@ -865,6 +912,305 @@ static void mn_handle_client_message(mn_instance *instance, const uint8_t *paylo
     mn_emit_message(instance, sender_id, channel, payload + 12, data_size);
 }
 
+
+static mn_reliable_entry *mn_find_reliable_slot(mn_instance *instance) {
+    size_t i;
+    for (i = 0; i < MN_MAX_RELIABLE_PENDING; ++i)
+        if (!instance->reliable[i].active) return &instance->reliable[i];
+    return NULL;
+}
+
+static int mn_reliable_was_seen(mn_instance *instance, uint32_t sender_id,
+                                uint32_t message_id) {
+    mn_seen_reliable *slot = NULL;
+    mn_seen_reliable *free_slot = NULL;
+    mn_seen_reliable *oldest = NULL;
+    size_t i;
+    if (!instance || sender_id == 0 || message_id == 0) return 1;
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        mn_seen_reliable *candidate = &instance->reliable_seen[i];
+        if (candidate->sender_id == sender_id) {
+            slot = candidate;
+            break;
+        }
+        if (candidate->sender_id == 0 && !free_slot) free_slot = candidate;
+        if (candidate->sender_id != 0 &&
+            (!oldest || candidate->age < oldest->age)) oldest = candidate;
+    }
+    if (!slot) {
+        slot = free_slot ? free_slot : oldest;
+        if (!slot) return 1;
+        memset(slot, 0, sizeof(*slot));
+        slot->sender_id = sender_id;
+    }
+    for (i = 0; i < slot->count; ++i) {
+        if (slot->message_ids[i] == message_id) {
+            instance->reliable_seen_age++;
+            slot->age = instance->reliable_seen_age;
+            return 1;
+        }
+    }
+    slot->message_ids[slot->next] = message_id;
+    slot->next = (uint8_t)((slot->next + 1u) % MN_RELIABLE_SEEN_IDS);
+    if (slot->count < MN_RELIABLE_SEEN_IDS) slot->count++;
+    instance->reliable_seen_age++;
+    slot->age = instance->reliable_seen_age;
+    return 0;
+}
+
+static void mn_send_reliable_entry(mn_instance *instance,
+                                   mn_reliable_entry *entry) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[24u + MN_MAX_MESSAGE_BYTES];
+    size_t payload_size, packet_size;
+    if (!instance || !entry || !entry->active) return;
+    if (instance->info.role == MN_ROLE_HOST) {
+        mn_peer *peer = mn_find_peer_id(instance, entry->peer_id);
+        if (!peer) return;
+        mn_write_u32(payload, entry->sender_id);
+        mn_write_u32(payload + 4, entry->target_id);
+        mn_write_u32(payload + 8, entry->message_id);
+        mn_write_u16(payload + 12, entry->channel);
+        mn_write_u16(payload + 14, entry->data_size);
+        if (entry->data_size) memcpy(payload + 16, entry->data, entry->data_size);
+        payload_size = 16u + entry->data_size;
+        packet_size = mn_make_packet(packet, MN_PKT_RELIABLE, instance->config.app_id,
+                                     instance->info.room_id, payload, payload_size);
+        mn_send_to(instance, &peer->address, packet, packet_size);
+    } else if (instance->info.role == MN_ROLE_CLIENT &&
+               instance->info.status == MN_STATUS_CONNECTED) {
+        mn_write_u64(payload, instance->session_token);
+        mn_write_u32(payload + 8, entry->sender_id);
+        mn_write_u32(payload + 12, entry->target_id);
+        mn_write_u32(payload + 16, entry->message_id);
+        mn_write_u16(payload + 20, entry->channel);
+        mn_write_u16(payload + 22, entry->data_size);
+        if (entry->data_size) memcpy(payload + 24, entry->data, entry->data_size);
+        payload_size = 24u + entry->data_size;
+        packet_size = mn_make_packet(packet, MN_PKT_RELIABLE, instance->config.app_id,
+                                     instance->info.room_id, payload, payload_size);
+        mn_send_to(instance, &instance->server, packet, packet_size);
+    }
+}
+
+static int mn_queue_reliable_for_peer(mn_instance *instance, uint32_t peer_id,
+                                      uint32_t sender_id, uint32_t target_id,
+                                      uint32_t message_id, uint16_t channel,
+                                      const void *data, size_t size) {
+    mn_reliable_entry *entry = mn_find_reliable_slot(instance);
+    if (!entry) return 0;
+    memset(entry, 0, sizeof(*entry));
+    entry->active = 1;
+    entry->peer_id = peer_id;
+    entry->sender_id = sender_id;
+    entry->target_id = target_id;
+    entry->message_id = message_id;
+    entry->channel = channel;
+    entry->data_size = (uint16_t)size;
+    if (size) memcpy(entry->data, data, size);
+    entry->attempts = 1;
+    mn_send_reliable_entry(instance, entry);
+    return 1;
+}
+
+static void mn_send_reliable_ack_to_peer(mn_instance *instance,
+                                         const struct sockaddr_in *address,
+                                         uint32_t message_id) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[4];
+    size_t packet_size;
+    mn_write_u32(payload, message_id);
+    packet_size = mn_make_packet(packet, MN_PKT_RELIABLE_ACK, instance->config.app_id,
+                                 instance->info.room_id, payload, sizeof(payload));
+    mn_send_to(instance, address, packet, packet_size);
+}
+
+static void mn_send_reliable_ack_to_host(mn_instance *instance, uint32_t message_id) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[12];
+    size_t packet_size;
+    mn_write_u64(payload, instance->session_token);
+    mn_write_u32(payload + 8, message_id);
+    packet_size = mn_make_packet(packet, MN_PKT_RELIABLE_ACK, instance->config.app_id,
+                                 instance->info.room_id, payload, sizeof(payload));
+    mn_send_to(instance, &instance->server, packet, packet_size);
+}
+
+static void mn_remove_reliable_entry(mn_instance *instance, uint32_t peer_id,
+                                     uint32_t message_id) {
+    size_t i;
+    for (i = 0; i < MN_MAX_RELIABLE_PENDING; ++i) {
+        mn_reliable_entry *entry = &instance->reliable[i];
+        if (entry->active && entry->peer_id == peer_id &&
+            entry->message_id == message_id)
+            memset(entry, 0, sizeof(*entry));
+    }
+}
+
+static void mn_handle_host_reliable(mn_instance *instance, const uint8_t *payload,
+                                    size_t payload_size,
+                                    const struct sockaddr_in *from) {
+    uint64_t token;
+    uint32_t sender_id, target_id, message_id;
+    uint16_t channel, data_size;
+    mn_peer *peer;
+    size_t i, needed = 0, free_slots = 0;
+    if (payload_size < 24u) return;
+    token = mn_read_u64(payload);
+    sender_id = mn_read_u32(payload + 8);
+    target_id = mn_read_u32(payload + 12);
+    message_id = mn_read_u32(payload + 16);
+    channel = mn_read_u16(payload + 20);
+    data_size = mn_read_u16(payload + 22);
+    if (message_id == 0 || (size_t)data_size > MN_MAX_MESSAGE_BYTES ||
+        payload_size != 24u + data_size) return;
+    peer = mn_find_peer_token(instance, token);
+    if (!peer || !mn_same_address(&peer->address, from) || sender_id != peer->id) return;
+    if (target_id != 0) return;
+    if (peer->message_cooldown > 0.0f) return;
+    if (mn_reliable_was_seen(instance, peer->id, message_id)) {
+        mn_send_reliable_ack_to_peer(instance, from, message_id);
+        return;
+    }
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        if (instance->peers[i].active && instance->peers[i].id != peer->id) needed++;
+    }
+    for (i = 0; i < MN_MAX_RELIABLE_PENDING; ++i)
+        if (!instance->reliable[i].active) free_slots++;
+    if (needed > free_slots) return;
+
+    peer->message_cooldown = 0.08f;
+    peer->silence = 0.0f;
+    mn_send_reliable_ack_to_peer(instance, from, message_id);
+    mn_emit_message(instance, peer->id, channel, payload + 24, data_size);
+    for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+        mn_peer *recipient = &instance->peers[i];
+        if (!recipient->active || recipient->id == peer->id) continue;
+        (void)mn_queue_reliable_for_peer(instance, recipient->id, peer->id, 0,
+                                         message_id, channel, payload + 24, data_size);
+    }
+}
+
+static void mn_handle_client_reliable(mn_instance *instance, const uint8_t *payload,
+                                      size_t payload_size) {
+    uint32_t sender_id, target_id, message_id;
+    uint16_t channel, data_size;
+    if (payload_size < 16u) return;
+    sender_id = mn_read_u32(payload);
+    target_id = mn_read_u32(payload + 4);
+    message_id = mn_read_u32(payload + 8);
+    channel = mn_read_u16(payload + 12);
+    data_size = mn_read_u16(payload + 14);
+    if (message_id == 0 || (size_t)data_size > MN_MAX_MESSAGE_BYTES ||
+        payload_size != 16u + data_size) return;
+    if (target_id != 0 && target_id != instance->info.local_player_id) return;
+    mn_send_reliable_ack_to_host(instance, message_id);
+    if (mn_reliable_was_seen(instance, sender_id, message_id)) return;
+    mn_emit_message(instance, sender_id, channel, payload + 16, data_size);
+}
+
+static void mn_handle_host_reliable_ack(mn_instance *instance,
+                                        const uint8_t *payload, size_t payload_size,
+                                        const struct sockaddr_in *from) {
+    uint64_t token;
+    uint32_t message_id;
+    mn_peer *peer;
+    if (payload_size != 12u) return;
+    token = mn_read_u64(payload);
+    message_id = mn_read_u32(payload + 8);
+    peer = mn_find_peer_token(instance, token);
+    if (!peer || !mn_same_address(&peer->address, from)) return;
+    peer->silence = 0.0f;
+    mn_remove_reliable_entry(instance, peer->id, message_id);
+}
+
+static void mn_handle_client_reliable_ack(mn_instance *instance,
+                                          const uint8_t *payload, size_t payload_size) {
+    if (payload_size != 4u) return;
+    mn_remove_reliable_entry(instance, 0, mn_read_u32(payload));
+}
+
+
+static void mn_send_pong_to_peer(mn_instance *instance,
+                                 const struct sockaddr_in *address,
+                                 uint32_t ping_id) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[4];
+    size_t packet_size;
+    mn_write_u32(payload, ping_id);
+    packet_size = mn_make_packet(packet, MN_PKT_PONG, instance->config.app_id,
+                                 instance->info.room_id, payload, sizeof(payload));
+    mn_send_to(instance, address, packet, packet_size);
+}
+
+static void mn_send_pong_to_host(mn_instance *instance, uint32_t ping_id) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[12];
+    size_t packet_size;
+    mn_write_u64(payload, instance->session_token);
+    mn_write_u32(payload + 8, ping_id);
+    packet_size = mn_make_packet(packet, MN_PKT_PONG, instance->config.app_id,
+                                 instance->info.room_id, payload, sizeof(payload));
+    mn_send_to(instance, &instance->server, packet, packet_size);
+}
+
+static void mn_complete_ping(mn_instance *instance) {
+    instance->info.ping_ms = instance->ping_elapsed * 1000.0f;
+    instance->info.ping_available = 1;
+    instance->info.ping_pending = 0;
+    instance->ping_elapsed = 0.0f;
+    instance->ping_pending_id = 0;
+    instance->ping_pending_target = 0;
+}
+
+static void mn_handle_host_ping(mn_instance *instance, const uint8_t *payload,
+                                size_t payload_size, const struct sockaddr_in *from) {
+    uint64_t token;
+    uint32_t ping_id;
+    mn_peer *peer;
+    if (payload_size != 12u) return;
+    token = mn_read_u64(payload);
+    ping_id = mn_read_u32(payload + 8);
+    if (ping_id == 0) return;
+    peer = mn_find_peer_token(instance, token);
+    if (!peer || !mn_same_address(&peer->address, from)) return;
+    peer->silence = 0.0f;
+    mn_send_pong_to_peer(instance, from, ping_id);
+}
+
+static void mn_handle_host_pong(mn_instance *instance, const uint8_t *payload,
+                                size_t payload_size, const struct sockaddr_in *from) {
+    uint64_t token;
+    uint32_t ping_id;
+    mn_peer *peer;
+    if (payload_size != 12u) return;
+    token = mn_read_u64(payload);
+    ping_id = mn_read_u32(payload + 8);
+    peer = mn_find_peer_token(instance, token);
+    if (!peer || !mn_same_address(&peer->address, from)) return;
+    if (!instance->info.ping_pending ||
+        instance->ping_pending_target != peer->id ||
+        instance->ping_pending_id != ping_id) return;
+    peer->silence = 0.0f;
+    mn_complete_ping(instance);
+}
+
+static void mn_handle_client_ping(mn_instance *instance,
+                                  const uint8_t *payload, size_t payload_size) {
+    if (payload_size != 4u) return;
+    mn_send_pong_to_host(instance, mn_read_u32(payload));
+}
+
+static void mn_handle_client_pong(mn_instance *instance,
+                                  const uint8_t *payload, size_t payload_size) {
+    uint32_t ping_id;
+    if (payload_size != 4u) return;
+    ping_id = mn_read_u32(payload);
+    if (!instance->info.ping_pending || instance->ping_pending_target != 0 ||
+        instance->ping_pending_id != ping_id) return;
+    mn_complete_ping(instance);
+}
+
 static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
                              size_t packet_size, const struct sockaddr_in *from) {
     uint8_t type;
@@ -973,6 +1319,22 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             mn_handle_host_message(instance, payload, payload_size, from);
             return;
         }
+        if (type == MN_PKT_RELIABLE) {
+            mn_handle_host_reliable(instance, payload, payload_size, from);
+            return;
+        }
+        if (type == MN_PKT_RELIABLE_ACK) {
+            mn_handle_host_reliable_ack(instance, payload, payload_size, from);
+            return;
+        }
+        if (type == MN_PKT_PING) {
+            mn_handle_host_ping(instance, payload, payload_size, from);
+            return;
+        }
+        if (type == MN_PKT_PONG) {
+            mn_handle_host_pong(instance, payload, payload_size, from);
+            return;
+        }
         return;
     }
 
@@ -1065,6 +1427,22 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
         }
         if (type == MN_PKT_MESSAGE) {
             mn_handle_client_message(instance, payload, payload_size);
+            return;
+        }
+        if (type == MN_PKT_RELIABLE) {
+            mn_handle_client_reliable(instance, payload, payload_size);
+            return;
+        }
+        if (type == MN_PKT_RELIABLE_ACK) {
+            mn_handle_client_reliable_ack(instance, payload, payload_size);
+            return;
+        }
+        if (type == MN_PKT_PING) {
+            mn_handle_client_ping(instance, payload, payload_size);
+            return;
+        }
+        if (type == MN_PKT_PONG) {
+            mn_handle_client_pong(instance, payload, payload_size);
             return;
         }
     }
@@ -1160,6 +1538,16 @@ static int mn_host_internal(mn_instance *instance, const char *player_name,
     memset(instance->players, 0, sizeof(instance->players));
     instance->room_count = 0;
     instance->session_token = 0;
+    instance->info.ping_pending = 0;
+    instance->info.ping_available = 0;
+    instance->info.ping_ms = 0.0f;
+    instance->ping_elapsed = 0.0f;
+    instance->ping_pending_id = 0;
+    instance->ping_pending_target = 0;
+    memset(instance->reliable, 0, sizeof(instance->reliable));
+    memset(instance->reliable_seen, 0, sizeof(instance->reliable_seen));
+    instance->next_reliable_id = 0;
+    instance->reliable_seen_age = 0;
     instance->next_state_sequence = 0;
     instance->snapshot_sequence = 0;
     instance->last_snapshot_sequence = 0;
@@ -1379,6 +1767,16 @@ static int mn_join_internal(mn_instance *instance, const char *host, uint16_t po
     instance->info.max_players = instance->config.max_players;
     instance->info.room_name[0] = '\0';
     instance->session_token = 0;
+    instance->info.ping_pending = 0;
+    instance->info.ping_available = 0;
+    instance->info.ping_ms = 0.0f;
+    instance->ping_elapsed = 0.0f;
+    instance->ping_pending_id = 0;
+    instance->ping_pending_target = 0;
+    memset(instance->reliable, 0, sizeof(instance->reliable));
+    memset(instance->reliable_seen, 0, sizeof(instance->reliable_seen));
+    instance->next_reliable_id = 0;
+    instance->reliable_seen_age = 0;
     instance->connect_elapsed = 0.0f;
     instance->server_silence = 0.0f;
     instance->heartbeat_tick = 0.0f;
@@ -1461,6 +1859,16 @@ void mn_leave(mn_instance *instance) {
     instance->info.local_name[0] = '\0';
     instance->info.last_error[0] = '\0';
     instance->session_token = 0;
+    instance->info.ping_pending = 0;
+    instance->info.ping_available = 0;
+    instance->info.ping_ms = 0.0f;
+    instance->ping_elapsed = 0.0f;
+    instance->ping_pending_id = 0;
+    instance->ping_pending_target = 0;
+    memset(instance->reliable, 0, sizeof(instance->reliable));
+    memset(instance->reliable_seen, 0, sizeof(instance->reliable_seen));
+    instance->next_reliable_id = 0;
+    instance->reliable_seen_age = 0;
     instance->next_state_sequence = 0;
     instance->snapshot_sequence = 0;
     instance->last_snapshot_sequence = 0;
@@ -1554,6 +1962,61 @@ int mn_send_message(mn_instance *instance, uint32_t target_player_id,
     return packet_size != 0;
 }
 
+
+int mn_send_reliable_message(mn_instance *instance, uint32_t target_player_id,
+                             uint16_t channel, const void *data, size_t size) {
+    uint32_t message_id;
+    size_t i, needed = 0, free_slots = 0;
+    if (!instance || !instance->ready || size > MN_MAX_MESSAGE_BYTES ||
+        (size > 0 && !data)) return 0;
+    if (instance->info.role == MN_ROLE_HOST &&
+        instance->info.status == MN_STATUS_HOSTING) {
+        if (target_player_id != 0 && target_player_id != instance->info.local_player_id &&
+            !mn_find_peer_id(instance, target_player_id)) return 0;
+        for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+            if (instance->peers[i].active &&
+                (target_player_id == 0 || instance->peers[i].id == target_player_id))
+                needed++;
+        }
+        for (i = 0; i < MN_MAX_RELIABLE_PENDING; ++i)
+            if (!instance->reliable[i].active) free_slots++;
+        if (needed > free_slots) {
+            mn_set_error(instance, "Reliable message queue is full");
+            return 0;
+        }
+        instance->next_reliable_id++;
+        if (instance->next_reliable_id == 0) instance->next_reliable_id++;
+        message_id = instance->next_reliable_id;
+        mn_emit_message(instance, instance->info.local_player_id, channel,
+                        (const uint8_t *)data, size);
+        for (i = 0; i < MN_MAX_PLAYERS; ++i) {
+            mn_peer *peer = &instance->peers[i];
+            if (!peer->active ||
+                (target_player_id != 0 && peer->id != target_player_id)) continue;
+            (void)mn_queue_reliable_for_peer(instance, peer->id,
+                                             instance->info.local_player_id,
+                                             target_player_id, message_id,
+                                             channel, data, size);
+        }
+        return 1;
+    }
+    if (instance->info.role != MN_ROLE_CLIENT ||
+        instance->info.status != MN_STATUS_CONNECTED || target_player_id != 0) return 0;
+    if (!mn_find_reliable_slot(instance)) {
+        mn_set_error(instance, "Reliable message queue is full");
+        return 0;
+    }
+    instance->next_reliable_id++;
+    if (instance->next_reliable_id == 0) instance->next_reliable_id++;
+    message_id = instance->next_reliable_id;
+    if (!mn_queue_reliable_for_peer(instance, 0, instance->info.local_player_id,
+                                    0, message_id, channel, data, size)) return 0;
+    mn_emit_message(instance, instance->info.local_player_id, channel,
+                    (const uint8_t *)data, size);
+    return 1;
+}
+
+
 void mn_update(mn_instance *instance, float dt_seconds) {
     uint8_t packet[MN_MAX_DATAGRAM_SIZE];
     struct sockaddr_in from;
@@ -1615,6 +2078,11 @@ void mn_update(mn_instance *instance, float dt_seconds) {
             instance->info.status = MN_STATUS_OFFLINE;
             instance->info.player_count = 0;
             instance->info.match_started = 0;
+            instance->info.ping_pending = 0;
+            instance->info.ping_available = 0;
+            instance->ping_elapsed = 0.0f;
+            instance->ping_pending_id = 0;
+            instance->ping_pending_target = 0;
             memset(instance->players, 0, sizeof(instance->players));
             mn_emit_simple_event(instance, MN_EVENT_DISCONNECTED,
                                  "Host disconnected", player_id);
@@ -1628,6 +2096,38 @@ void mn_update(mn_instance *instance, float dt_seconds) {
 
 
 
+        }
+    }
+
+    if (instance->info.ping_pending) {
+        instance->ping_elapsed += dt;
+        if (instance->ping_elapsed >= MN_PING_TIMEOUT_SECONDS) {
+            instance->info.ping_pending = 0;
+            instance->info.ping_available = 0;
+            instance->ping_pending_id = 0;
+            instance->ping_pending_target = 0;
+            instance->ping_elapsed = 0.0f;
+            mn_emit_simple_event(instance, MN_EVENT_ERROR, "Ping request timed out", 0);
+        }
+    }
+
+    for (i = 0; i < MN_MAX_RELIABLE_PENDING; ++i) {
+        mn_reliable_entry *entry = &instance->reliable[i];
+        if (!entry->active) continue;
+        entry->retry_elapsed += dt;
+        if (entry->retry_elapsed >= MN_RELIABLE_RETRY_SECONDS) {
+            if (entry->attempts >= MN_RELIABLE_MAX_ATTEMPTS) {
+                char error_text[160];
+                (void)snprintf(error_text, sizeof(error_text),
+                               "Reliable message %u to player %u was not acknowledged",
+                               (unsigned)entry->message_id, (unsigned)entry->peer_id);
+                mn_emit_simple_event(instance, MN_EVENT_ERROR, error_text, entry->peer_id);
+                memset(entry, 0, sizeof(*entry));
+            } else {
+                entry->attempts++;
+                entry->retry_elapsed = 0.0f;
+                mn_send_reliable_entry(instance, entry);
+            }
         }
     }
 
@@ -1654,6 +2154,50 @@ void mn_update(mn_instance *instance, float dt_seconds) {
         }
     }
 }
+
+
+int mn_ping(mn_instance *instance, uint32_t target_player_id) {
+    uint8_t packet[MN_MAX_DATAGRAM_SIZE];
+    uint8_t payload[12];
+    size_t payload_size, packet_size;
+    const struct sockaddr_in *destination = NULL;
+    mn_peer *peer = NULL;
+    if (!instance || !instance->ready || instance->info.ping_pending) return 0;
+    if (instance->info.role == MN_ROLE_HOST &&
+        instance->info.status == MN_STATUS_HOSTING && target_player_id != 0) {
+        peer = mn_find_peer_id(instance, target_player_id);
+        if (!peer) return 0;
+        destination = &peer->address;
+        mn_write_u32(payload, 0);
+        payload_size = 4u;
+    } else if (instance->info.role == MN_ROLE_CLIENT &&
+               instance->info.status == MN_STATUS_CONNECTED && target_player_id == 0) {
+        mn_write_u64(payload, instance->session_token);
+        mn_write_u32(payload + 8, 0);
+        payload_size = 12u;
+        destination = &instance->server;
+    } else {
+        return 0;
+    }
+    instance->ping_sequence++;
+    if (instance->ping_sequence == 0) instance->ping_sequence++;
+    if (instance->info.role == MN_ROLE_CLIENT) {
+        mn_write_u32(payload + 8, instance->ping_sequence);
+    } else {
+        mn_write_u32(payload, instance->ping_sequence);
+    }
+    packet_size = mn_make_packet(packet, MN_PKT_PING, instance->config.app_id,
+                                 instance->info.room_id, payload, payload_size);
+    mn_send_to(instance, destination, packet, packet_size);
+    instance->ping_pending_id = instance->ping_sequence;
+    instance->ping_pending_target = target_player_id;
+    instance->ping_elapsed = 0.0f;
+    instance->info.ping_ms = 0.0f;
+    instance->info.ping_available = 0;
+    instance->info.ping_pending = 1;
+    return packet_size != 0;
+}
+
 
 int mn_is_host(const mn_instance *instance) {
     return instance && instance->info.role == MN_ROLE_HOST &&

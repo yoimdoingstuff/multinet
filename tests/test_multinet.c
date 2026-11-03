@@ -40,6 +40,8 @@ int main(void) {
     mn_event event;
     int result = 0;
     int connected = 0, message_received = 0, host_message_received = 0;
+    int reliable_received = 0, reliable_host_received = 0;
+    int client_ping_received = 0, host_ping_received = 0;
     unsigned iteration;
     size_t extra_count = 0, j;
 
@@ -149,6 +151,73 @@ int main(void) {
         sleep_ms(5);
     }
     CHECK(host_message_received, "client receives targeted host message");
+
+
+    {
+        static const char reliable_text[] = "reliable-client";
+        CHECK(mn_send_reliable_message(client, 0, 88, reliable_text,
+                                       sizeof(reliable_text) - 1),
+              "client queues a reliable message");
+        for (iteration = 0; iteration < 60 && !reliable_received; ++iteration) {
+            mn_update(client, 0.01f);
+            mn_update(host, 0.01f);
+            while (mn_poll_event(host, &event)) {
+                if (event.type == MN_EVENT_MESSAGE && event.channel == 88 &&
+                    event.data_size == sizeof(reliable_text) - 1 &&
+                    memcmp(event.data, reliable_text, sizeof(reliable_text) - 1) == 0)
+                    reliable_received = 1;
+            }
+            sleep_ms(5);
+        }
+    }
+    CHECK(reliable_received, "host receives acknowledged client reliable message");
+
+    {
+        static const char reliable_text[] = "reliable-host";
+        mn_get_info(client, &client_info);
+        CHECK(mn_send_reliable_message(host, client_info.local_player_id, 99,
+                                       reliable_text, sizeof(reliable_text) - 1),
+              "host queues a targeted reliable message");
+        for (iteration = 0; iteration < 60 && !reliable_host_received; ++iteration) {
+            mn_update(host, 0.01f);
+            mn_update(client, 0.01f);
+            while (mn_poll_event(client, &event)) {
+                if (event.type == MN_EVENT_MESSAGE && event.channel == 99 &&
+                    event.data_size == sizeof(reliable_text) - 1 &&
+                    memcmp(event.data, reliable_text, sizeof(reliable_text) - 1) == 0)
+                    reliable_host_received = 1;
+            }
+            sleep_ms(5);
+        }
+    }
+    CHECK(reliable_host_received, "client receives acknowledged host reliable message");
+
+
+    CHECK(mn_ping(client, 0), "client starts a ping to the host");
+    for (iteration = 0; iteration < 60 && !client_ping_received; ++iteration) {
+        mn_update(client, 0.01f);
+        mn_update(host, 0.01f);
+        mn_get_info(client, &client_info);
+        if (client_info.ping_available) client_ping_received = 1;
+        sleep_ms(5);
+    }
+    CHECK(client_ping_received && client_info.ping_ms >= 0.0f &&
+          client_info.ping_ms < 5000.0f,
+          "client receives a valid host round-trip latency measurement");
+
+    mn_get_info(client, &client_info);
+    CHECK(mn_ping(host, client_info.local_player_id),
+          "host starts a ping to a selected client");
+    for (iteration = 0; iteration < 60 && !host_ping_received; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(client, 0.01f);
+        mn_get_info(host, &host_info);
+        if (host_info.ping_available) host_ping_received = 1;
+        sleep_ms(5);
+    }
+    CHECK(host_ping_received && host_info.ping_ms >= 0.0f &&
+          host_info.ping_ms < 5000.0f,
+          "host receives a valid client round-trip latency measurement");
 
     CHECK(mn_start_match(host), "host starts match");
     for (iteration = 0; iteration < 10; ++iteration) {

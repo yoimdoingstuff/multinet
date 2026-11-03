@@ -13,7 +13,7 @@ There is no hidden relay or tunnel. These are ordinary UDP connection attempts o
 
 ## Using Bluetooth PAN, Wi-Fi Direct, hotspots and Ethernet
 
-MultiNet uses ordinary IP networking. It can use Ethernet, Wi-Fi, phone hotspots, USB tethering, Wi-Fi Direct and Bluetooth Personal Area Network (PAN) when the operating system has created an IP interface for that connection. Pair/connect the devices through the normal OS network settings first, then call `mn_get_interfaces()` to list their IPv4 addresses and adapter types. Bind the host with `mn_host_on()` and the client with `mn_join_from()` to select that interface instead of relying on whichever route the OS happens to choose.
+MultiNet uses ordinary IP networking. It can use Ethernet, Wi-Fi, phone hotspots, USB tethering, Wi-Fi Direct and Bluetooth Personal Area Network (PAN) when the operating system has created an IP interface for that connection. Pair/connect the devices through the normal OS network settings first, then call `mn_get_interfaces()` to list their IPv4 addresses and adapter types. Bind the host with `mn_host_on()` and the client with `mn_join_from()` to select that interface instead of relying on whichever route the OS happens to choose. The demo exposes this through `interfaces`, `host-on`, `join-from` and `scan-on` commands.
 
 This is Bluetooth PAN networking, not direct Bluetooth Low Energy advertising or RFCOMM. MultiNet does not silently pair devices or toggle radios. Bluetooth PAN and Wi-Fi Direct availability depends on OS version, drivers, device support and administrator policy. If they do not create usable IPv4 addresses, use ordinary Wi-Fi/Ethernet or a supported hotspot.
 
