@@ -30,6 +30,38 @@ typedef struct test_state_validator_context {
     unsigned out_of_bounds_candidates;
 } test_state_validator_context;
 
+static int test_aes256gcm_vector(void) {
+    static const uint8_t key[32] = {0};
+    static const uint8_t nonce[12] = {0};
+    static const uint8_t plaintext[16] = {0};
+    static const uint8_t expected_ciphertext[16] = {
+        0xce, 0xa7, 0x40, 0x3d, 0x4d, 0x60, 0x6b, 0x6e,
+        0x07, 0x4e, 0xc5, 0xd3, 0xba, 0xf3, 0x9d, 0x18
+    };
+    static const uint8_t expected_tag[16] = {
+        0xd0, 0xd1, 0xc8, 0xa7, 0x99, 0x99, 0x6b, 0xf0,
+        0x26, 0x5b, 0x98, 0xb5, 0xd4, 0x8a, 0xb9, 0x19
+    };
+    uint8_t ciphertext[16], tag[16], recovered[16], bad_tag[16];
+    if (!mn_crypto_aes256gcm_encrypt(key, nonce, NULL, 0,
+                                     plaintext, sizeof(plaintext),
+                                     ciphertext, tag))
+        return 0;
+    if (memcmp(ciphertext, expected_ciphertext, sizeof(ciphertext)) != 0 ||
+        memcmp(tag, expected_tag, sizeof(tag)) != 0)
+        return 0;
+    if (!mn_crypto_aes256gcm_decrypt(key, nonce, NULL, 0,
+                                     ciphertext, sizeof(ciphertext), tag,
+                                     recovered) ||
+        memcmp(recovered, plaintext, sizeof(plaintext)) != 0)
+        return 0;
+    memcpy(bad_tag, tag, sizeof(tag));
+    bad_tag[0] ^= 0x01u;
+    return !mn_crypto_aes256gcm_decrypt(key, nonce, NULL, 0,
+                                        ciphertext, sizeof(ciphertext), bad_tag,
+                                        recovered);
+}
+
 static int test_hmac_sha256_vector(void) {
     static const uint8_t expected[32] = {
         0xf7, 0xbc, 0x83, 0xf4, 0x30, 0x53, 0x84, 0x24,
@@ -131,8 +163,8 @@ int main(void) {
     CHECK(host != NULL && client != NULL && scanner != NULL &&
           bad_key_scanner != NULL && auto_scanner != NULL,
           "create independent host, client and discovery instances");
-    CHECK(mn_crypto_available() && test_hmac_sha256_vector() &&
-          mn_generate_room_key(room_key) &&
+    CHECK(mn_crypto_available() && test_aes256gcm_vector() &&
+          test_hmac_sha256_vector() && mn_generate_room_key(room_key) &&
           mn_generate_room_key(wrong_room_key),
           "AES-GCM/HMAC backend and operating-system key generation pass known-answer tests");
     wrong_room_key[0] ^= 0xA5u;
@@ -224,6 +256,12 @@ int main(void) {
         discovered_count = mn_get_rooms(scanner, discovered_rooms, MN_MAX_ROOMS);
         if (discovered_count > 0) break;
         sleep_ms(5);
+    }
+    if (discovered_count != 1) {
+        mn_get_info(scanner, &scanner_info);
+        fprintf(stderr, "DIAG: secure discovery rooms=%u status=%u last_error='%s'\n",
+                (unsigned)discovered_count, (unsigned)scanner_info.status,
+                scanner_info.last_error);
     }
     CHECK(discovered_count == 1 &&
           strcmp(discovered_rooms[0].name, "Local Test") == 0,
