@@ -41,7 +41,7 @@
 - [x] Add package-config generation and an installed-consumer CI test.
 - [ ] Publish a versioned release archive.
 - [ ] Add examples for a non-game chat/message app and a simple replicated 2D object.
-- [ ] Add fuzz tests for malformed headers, lengths and player-state payloads.
+- [x] Add an optional Clang/libFuzzer target for malformed headers, lengths, room offers and player-state payloads.
 - [ ] Add Windows multi-process LAN manual test checklist.
 
 ## Explicit non-goals

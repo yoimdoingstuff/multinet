@@ -41,6 +41,14 @@ ctest --test-dir build -C Release --output-on-failure
 
 The build produces `multinet` (static library), `multinet_demo` (interactive demo) and `multinet_tests` (loopback integration test). Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
 
+An optional Clang/libFuzzer target exercises malformed packet framing, room-offer parsing and player-state decoding. It is separate from the normal cross-platform build:
+
+```sh
+CC=clang cmake -S . -B build-fuzz -DMULTINET_BUILD_FUZZERS=ON -DMULTINET_BUILD_DEMO=OFF -DMULTINET_BUILD_TESTS=OFF
+cmake --build build-fuzz --parallel
+./build-fuzz/multinet_packet_fuzzer -max_len=1472 -runs=10000
+```
+
 ## Demo
 
 Open two terminals on one PC. Start the host:

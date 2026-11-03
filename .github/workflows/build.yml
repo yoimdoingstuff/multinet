@@ -71,3 +71,16 @@ jobs:
           path: install/
           if-no-files-found: error
           retention-days: 30
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Clang libFuzzer target
+        run: |
+          clang --version
+          CC=clang cmake -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMULTINET_BUILD_FUZZERS=ON -DMULTINET_BUILD_DEMO=OFF -DMULTINET_BUILD_TESTS=OFF
+      - name: Build fuzz target
+        run: cmake --build build-fuzz --parallel
+      - name: Fuzz packet framing and player-state payloads
+        run: ./build-fuzz/multinet_packet_fuzzer -max_len=1472 -runs=3000

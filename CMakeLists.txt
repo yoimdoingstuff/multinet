@@ -62,6 +62,27 @@ if(BUILD_TESTING AND MULTINET_BUILD_TESTS)
     add_test(NAME multinet_loopback COMMAND multinet_tests)
 endif()
 
+option(MULTINET_BUILD_FUZZERS "Build the optional Clang/libFuzzer packet target" OFF)
+if(MULTINET_BUILD_FUZZERS)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MULTINET_BUILD_FUZZERS requires Clang with libFuzzer support")
+    endif()
+    if(NOT UNIX OR WIN32)
+        message(FATAL_ERROR "The current libFuzzer harness is supported on Unix-like systems")
+    endif()
+    add_executable(multinet_packet_fuzzer tests/fuzz_packets.c)
+    target_include_directories(multinet_packet_fuzzer PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(multinet_packet_fuzzer PRIVATE
+        _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE=1)
+    target_compile_options(multinet_packet_fuzzer PRIVATE
+        -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+        -Wall -Wextra -Wpedantic)
+    target_link_options(multinet_packet_fuzzer PRIVATE
+        -fsanitize=fuzzer,address,undefined)
+    target_link_libraries(multinet_packet_fuzzer PRIVATE m)
+endif()
+
 install(TARGETS multinet EXPORT MultiNetTargets ARCHIVE DESTINATION lib)
 install(FILES include/multinet.h DESTINATION include)
 install(EXPORT MultiNetTargets NAMESPACE MultiNet:: DESTINATION lib/cmake/MultiNet)

@@ -43,4 +43,5 @@ Discovery supports IPv4 global/subnet broadcast, explicit-interface directed bro
 - [ ] Host-side authoritative input/shot validation and match-result verification.
 - Optional encrypted and authenticated transport for untrusted networks.
 - IPv6 and standards-based service discovery.
+- [x] Add a Clang/libFuzzer harness for packet framing, room offers and player-state payload decoding.
 - Explicit player identity/pairing and encrypted peer authentication for untrusted networks.
