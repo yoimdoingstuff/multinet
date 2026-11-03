@@ -38,7 +38,7 @@
 
 ## Integration and packaging
 
-- [ ] Integrate this library into Golfgame and remove its duplicated `tg_network` implementation.
+- [x] Integrate MultiNet into Golfgame through a thin `tg_net_*` compatibility adapter; remove the duplicated UDP transport implementation.
 - [x] Add package-config generation and an installed-consumer CI test.
 - [ ] Publish a versioned release archive.
 - [x] Add a reliable chat-message example using application-defined channels and delivery acknowledgements.

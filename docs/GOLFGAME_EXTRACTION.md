@@ -41,4 +41,10 @@ A generic player record replaces the golf-specific ball struct. Games map their 
 6. Use `mn_poll_event()` for room/player/match events and `mn_send_message()` for game-specific events that are not part of the replicated player record.
 7. Keep game simulation, collision, scoring, rendering and UI in Golfgame. Do not treat a replicated state snapshot as proof that a shot or hole completion is valid.
 
-This repository extraction does not automatically change the Golfgame repository or its build. It establishes MultiNet as the separate library that can be integrated there in a follow-up change.
+## Integration completed
+
+Golfgame now consumes MultiNet from its CMake build using a pinned Git revision. For offline development, configure `GOLFGAME_MULTINET_SOURCE_DIR` to point at a local MultiNet checkout instead of allowing CMake FetchContent to download it.
+
+Golfgame retains `src/network/tg_network.h` as its game-facing compatibility API. Its `src/network/tg_network.c` file is now a small adapter that maps the existing `tg_net_player`, room and info structures to `mn_player`, `mn_room` and `mn_info`. The old duplicate UDP packet/socket implementation has been removed. The game-specific lobby UI, ball interpolation, scoring and rendering remain in Golfgame.
+
+Golfgame's `scripts/test-local.sh` now exercises the adapter using separate host and client processes and verifies position and stroke replication in both directions. The integration itself is tracked in the Golfgame repository; this document describes the mapping and dependency arrangement.
