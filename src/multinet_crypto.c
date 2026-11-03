@@ -69,6 +69,47 @@ cleanup:
 }
 
 int mn_crypto_backend_available(void) { return 1; }
+
+int mn_crypto_hmac_sha256(const uint8_t *key_bytes, size_t key_size,
+                          const uint8_t *data, size_t data_size,
+                          uint8_t output[32]) {
+    BCRYPT_ALG_HANDLE algorithm = NULL;
+    BCRYPT_HASH_HANDLE hash = NULL;
+    PUCHAR object = NULL;
+    DWORD object_size = 0, result_size = 0;
+    NTSTATUS status;
+    int ok = 0;
+    if (!key_bytes || key_size == 0 || key_size > ULONG_MAX ||
+        (!data && data_size != 0) || data_size > ULONG_MAX || !output)
+        return 0;
+    status = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM,
+                                         NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+    if (status < 0) goto cleanup;
+    status = BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH,
+                               (PUCHAR)&object_size, sizeof(object_size),
+                               &result_size, 0);
+    if (status < 0 || object_size == 0) goto cleanup;
+    object = (PUCHAR)HeapAlloc(GetProcessHeap(), 0, object_size);
+    if (!object) goto cleanup;
+    status = BCryptCreateHash(algorithm, &hash, object, object_size,
+                              (PUCHAR)key_bytes, (ULONG)key_size, 0);
+    if (status < 0) goto cleanup;
+    if (data_size != 0) {
+        status = BCryptHashData(hash, (PUCHAR)data, (ULONG)data_size, 0);
+        if (status < 0) goto cleanup;
+    }
+    status = BCryptFinishHash(hash, output, 32, 0);
+    ok = status >= 0;
+cleanup:
+    if (hash) BCryptDestroyHash(hash);
+    if (object) {
+        SecureZeroMemory(object, object_size);
+        HeapFree(GetProcessHeap(), 0, object);
+    }
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+    return ok;
+}
+
 int mn_crypto_aes256gcm_encrypt(const uint8_t key[32], const uint8_t nonce[12],
                                 const uint8_t *aad, size_t aad_size,
                                 const uint8_t *plain, size_t plain_size,
@@ -87,7 +128,19 @@ int mn_crypto_aes256gcm_decrypt(const uint8_t key[32], const uint8_t nonce[12],
 #else
 #include <limits.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 int mn_crypto_backend_available(void) { return 1; }
+
+int mn_crypto_hmac_sha256(const uint8_t *key, size_t key_size,
+                          const uint8_t *data, size_t data_size,
+                          uint8_t output[32]) {
+    unsigned int output_size = 0;
+    if (!key || key_size == 0 || key_size > INT_MAX ||
+        (!data && data_size != 0) || !output)
+        return 0;
+    return HMAC(EVP_sha256(), key, (int)key_size, data, data_size,
+                output, &output_size) != NULL && output_size == 32u;
+}
 
 int mn_crypto_aes256gcm_encrypt(const uint8_t key[32], const uint8_t nonce[12],
                                 const uint8_t *aad, size_t aad_size,
@@ -137,6 +190,12 @@ done:
 #endif
 #else
 int mn_crypto_backend_available(void) { return 0; }
+int mn_crypto_hmac_sha256(const uint8_t *key, size_t key_size,
+                          const uint8_t *data, size_t data_size,
+                          uint8_t output[32]) {
+    (void)key; (void)key_size; (void)data; (void)data_size; (void)output;
+    return 0;
+}
 int mn_crypto_aes256gcm_encrypt(const uint8_t key[32], const uint8_t nonce[12],
                                 const uint8_t *aad, size_t aad_size,
                                 const uint8_t *plain, size_t plain_size,

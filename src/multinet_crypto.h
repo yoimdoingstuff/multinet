@@ -5,6 +5,9 @@
 #include <stdint.h>
 
 int mn_crypto_backend_available(void);
+int mn_crypto_hmac_sha256(const uint8_t *key, size_t key_size,
+                          const uint8_t *data, size_t data_size,
+                          uint8_t output[32]);
 int mn_crypto_aes256gcm_encrypt(const uint8_t key[32], const uint8_t nonce[12],
                                 const uint8_t *aad, size_t aad_size,
                                 const uint8_t *plain, size_t plain_size,
