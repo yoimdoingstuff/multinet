@@ -1048,10 +1048,13 @@ static void mn_activate_peer(mn_instance *instance, mn_peer *peer) {
     peer->id = instance->next_player_id++;
     if (peer->id == 0) peer->id = instance->next_player_id++;
     peer->pending_approval = 0;
+    peer->challenge_pending = 0;
     peer->active = 1;
     peer->player.id = peer->id;
     peer->player.colour_rgba = 0xFFFFFFFFu;
     peer->player.rotation.w = 1.0f;
+    mn_secure_zero(peer->device_secret, sizeof(peer->device_secret));
+    mn_secure_zero(peer->challenge_nonce, sizeof(peer->challenge_nonce));
     mn_refresh_host_players(instance);
     memset(&event, 0, sizeof(event));
     event.type = MN_EVENT_PLAYER_JOINED;
@@ -2044,28 +2047,53 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
 
     if (instance->info.role == MN_ROLE_HOST) {
         if (type == MN_PKT_JOIN && room_id == 0 &&
-            payload_size == MN_DEVICE_ID_BYTES + MN_PLAYER_NAME_LENGTH) {
+            payload_size == MN_DEVICE_ID_BYTES + MN_DEVICE_SECRET_BYTES +
+                           MN_PLAYER_NAME_LENGTH) {
             mn_peer *peer = mn_find_peer_address(instance, from);
             const uint8_t *device_id = payload;
+            const uint8_t *device_secret = payload + MN_DEVICE_ID_BYTES;
             uint8_t name[MN_PLAYER_NAME_LENGTH];
-            size_t i, occupied = 0;
-            memcpy(name, payload + MN_DEVICE_ID_BYTES, sizeof(name));
+            size_t i, occupied = 0, paired_index;
+            memcpy(name, payload + MN_DEVICE_ID_BYTES + MN_DEVICE_SECRET_BYTES,
+                   sizeof(name));
             name[sizeof(name) - 1] = '\0';
             if (!mn_device_id_is_valid(device_id)) return;
+            if (instance->encryption_enabled) {
+                if (!mn_device_secret_is_valid(device_secret)) return;
+            } else if (instance->pairing_required ||
+                       mn_device_secret_is_valid(device_secret)) {
+                return;
+            }
+
             if (peer) {
                 peer->silence = 0.0f;
-                if (peer->pending_approval) return;
+                if (memcmp(peer->device_id, device_id, MN_DEVICE_ID_BYTES) != 0)
+                    return;
+                if (peer->pending_approval) {
+                    if (!mn_secure_equal(peer->device_secret, device_secret,
+                                         MN_DEVICE_SECRET_BYTES))
+                        return;
+                    if (peer->challenge_pending)
+                        (void)mn_send_pairing_challenge(instance, peer);
+                    return;
+                }
+                paired_index = mn_find_paired_device_index(instance, device_id);
+                if (paired_index < MN_MAX_PAIRED_DEVICES &&
+                    (!instance->encryption_enabled ||
+                     !mn_secure_equal(instance->paired_device_secrets[paired_index],
+                                      device_secret, MN_DEVICE_SECRET_BYTES)))
+                    return;
                 mn_send_welcome(instance, peer);
                 mn_send_snapshot_to(instance, from);
                 return;
             }
+
             /* The IPv4 allow-list is an independent network-level filter. */
             if (!mn_join_source_is_allowed(instance, from)) return;
             if (mn_active_player_count(instance) >= instance->info.max_players) return;
             for (i = 0; i < MN_MAX_PLAYERS; ++i) {
                 if (instance->peers[i].active || instance->peers[i].pending_approval)
                     occupied++;
-                else if (i == MN_MAX_PLAYERS) break;
             }
             if (occupied >= (size_t)instance->info.max_players - 1u) return;
             for (i = 0; i < MN_MAX_PLAYERS; ++i) {
@@ -2078,13 +2106,33 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             peer->address = *from;
             peer->pending_approval = 1;
             memcpy(peer->device_id, device_id, MN_DEVICE_ID_BYTES);
+            memcpy(peer->device_secret, device_secret, MN_DEVICE_SECRET_BYTES);
             memcpy(peer->player.name, name, sizeof(name));
             peer->player.name[MN_PLAYER_NAME_LENGTH - 1] = '\0';
             peer->player.colour_rgba = 0xFFFFFFFFu;
             peer->player.rotation.w = 1.0f;
-            if (instance->pairing_required &&
-                !mn_is_device_paired(instance, device_id)) {
-                peer->pending_approval = 1;
+
+            paired_index = mn_find_paired_device_index(instance, device_id);
+            if (paired_index < MN_MAX_PAIRED_DEVICES) {
+                if (!instance->encryption_enabled ||
+                    !mn_secure_equal(instance->paired_device_secrets[paired_index],
+                                     device_secret, MN_DEVICE_SECRET_BYTES)) {
+                    uint8_t denied[MN_MAX_DATAGRAM_SIZE];
+                    size_t denied_size = mn_make_packet(denied, MN_PKT_PAIRING_DENIED,
+                                                        instance->config.app_id, 0,
+                                                        NULL, 0);
+                    mn_send_to(instance, from, denied, denied_size);
+                    mn_secure_zero(peer, sizeof(*peer));
+                    return;
+                }
+                if (!mn_send_pairing_challenge(instance, peer)) {
+                    mn_secure_zero(peer, sizeof(*peer));
+                    mn_set_error(instance, "Could not create a device pairing challenge");
+                }
+                return;
+            }
+
+            if (instance->pairing_required) {
                 mn_emit_pairing_event(instance, MN_EVENT_PAIRING_REQUEST,
                                       peer, "A device is requesting to join this room");
                 return;
@@ -2093,6 +2141,34 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             return;
         }
         if (room_id != instance->info.room_id) return;
+        if (type == MN_PKT_PAIRING_PROOF &&
+            payload_size == MN_DEVICE_ID_BYTES + 32u) {
+            mn_peer *peer = mn_find_peer_address(instance, from);
+            uint8_t expected_proof[32];
+            if (!peer || !peer->pending_approval || !peer->challenge_pending ||
+                !mn_secure_equal(peer->device_id, payload, MN_DEVICE_ID_BYTES))
+                return;
+            if (!mn_make_pairing_proof(peer->device_secret, peer->device_id,
+                                       peer->challenge_nonce, instance->info.room_id,
+                                       instance->config.app_id, expected_proof) ||
+                !mn_secure_equal(expected_proof, payload + MN_DEVICE_ID_BYTES,
+                                 sizeof(expected_proof))) {
+                uint8_t denied[MN_MAX_DATAGRAM_SIZE];
+                size_t denied_size = mn_make_packet(denied, MN_PKT_PAIRING_DENIED,
+                                                    instance->config.app_id, 0,
+                                                    NULL, 0);
+                mn_send_to(instance, &peer->address, denied, denied_size);
+                mn_emit_pairing_event(instance, MN_EVENT_PAIRING_REJECTED,
+                                      peer, "Device pairing proof was invalid");
+                mn_secure_zero(peer, sizeof(*peer));
+                return;
+            }
+            peer->challenge_pending = 0;
+            mn_activate_peer(instance, peer);
+            mn_emit_pairing_event(instance, MN_EVENT_PAIRING_APPROVED,
+                                  peer, "Device proved its paired identity");
+            return;
+        }
         if (type == MN_PKT_STATE && payload_size == 12u + MN_WIRE_PLAYER_SIZE) {
             uint64_t token = mn_read_u64(payload);
             uint32_t sequence = mn_read_u32(payload + 8);
@@ -2167,6 +2243,28 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             instance->connect_elapsed = 0.0f;
             mn_emit_simple_event(instance, MN_EVENT_PAIRING_REJECTED,
                                  "The host rejected this device's pairing request", 0);
+            return;
+        }
+        if (type == MN_PKT_PAIRING_CHALLENGE &&
+            instance->info.status == MN_STATUS_CONNECTING &&
+            payload_size == MN_DEVICE_ID_BYTES + 32u &&
+            room_id != 0 &&
+            mn_secure_equal(payload, instance->device_id, MN_DEVICE_ID_BYTES)) {
+            uint8_t proof[32], proof_payload[MN_DEVICE_ID_BYTES + 32u];
+            uint8_t proof_packet[MN_MAX_DATAGRAM_SIZE];
+            size_t proof_packet_size;
+            if (!instance->encryption_enabled ||
+                !mn_make_pairing_proof(instance->device_secret, instance->device_id,
+                                       payload + MN_DEVICE_ID_BYTES, room_id,
+                                       instance->config.app_id, proof))
+                return;
+            memcpy(proof_payload, instance->device_id, MN_DEVICE_ID_BYTES);
+            memcpy(proof_payload + MN_DEVICE_ID_BYTES, proof, sizeof(proof));
+            proof_packet_size = mn_make_packet(proof_packet, MN_PKT_PAIRING_PROOF,
+                                               instance->config.app_id, room_id,
+                                               proof_payload, sizeof(proof_payload));
+            if (proof_packet_size != 0)
+                mn_send_to(instance, &instance->server, proof_packet, proof_packet_size);
             return;
         }
         if (room_id != instance->info.room_id &&
@@ -3004,18 +3102,18 @@ int mn_approve_pairing(mn_instance *instance,
     if (!instance || !instance->ready ||
         instance->info.role != MN_ROLE_HOST ||
         instance->info.status != MN_STATUS_HOSTING ||
+        !instance->encryption_enabled ||
         (approved != 0 && approved != 1) ||
         !mn_device_id_is_valid(device_id))
         return 0;
     for (i = 0; i < MN_MAX_PLAYERS; ++i) {
         mn_peer *peer = &instance->peers[i];
-        if (peer->pending_approval &&
+        if (peer->pending_approval && !peer->challenge_pending &&
             memcmp(peer->device_id, device_id, MN_DEVICE_ID_BYTES) == 0) {
             if (approved) {
-                if (!mn_pair_device(instance, device_id)) return 0;
-                mn_activate_peer(instance, peer);
-                mn_emit_pairing_event(instance, MN_EVENT_PAIRING_APPROVED,
-                                      peer, "Device paired and admitted to the room");
+                if (!mn_pair_device(instance, device_id, peer->device_secret))
+                    return 0;
+                if (!mn_send_pairing_challenge(instance, peer)) return 0;
             } else {
                 uint8_t deny_packet[MN_MAX_DATAGRAM_SIZE];
                 size_t deny_size = mn_make_packet(deny_packet, MN_PKT_PAIRING_DENIED,
