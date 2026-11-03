@@ -18,7 +18,7 @@
 - [x] Expose delivery IDs plus per-recipient acknowledgement/failure events to applications.
 - [x] Exercise reliable broadcast fan-out and one acknowledgement from each of 15 recipients.
 - [x] Re-ACK duplicate reliable packets during cooldown and only remember accepted messages after queue capacity is reserved.
-- [ ] Validate peer-controlled state against configurable bounds and application callbacks.
+- [x] Validate peer-controlled state against configurable position/velocity bounds and application callbacks.
 - [ ] Add an explicit allow-list / pairing flow for nearby devices.
 - [ ] Add optional encrypted and authenticated transport for untrusted networks.
 

@@ -23,6 +23,25 @@ static void sleep_ms(unsigned int ms) {
         result = 1; goto cleanup; } \
 } while (0)
 
+typedef struct test_state_validator_context {
+    unsigned calls;
+    unsigned rejected_score_regressions;
+} test_state_validator_context;
+
+static int test_player_state_validator(const mn_player *previous,
+                                       const mn_player *incoming,
+                                       void *user_data) {
+    test_state_validator_context *context =
+        (test_state_validator_context *)user_data;
+    if (!previous || !incoming || !context) return 0;
+    context->calls++;
+    if (incoming->score < previous->score) {
+        context->rejected_score_regressions++;
+        return 0;
+    }
+    return 1;
+}
+
 int main(void) {
     mn_config config;
     mn_instance *host = NULL;
@@ -41,6 +60,8 @@ int main(void) {
     int found_loopback = 0;
     mn_info host_info, client_info;
     mn_player state, received;
+    mn_player_state_limits state_limits, invalid_state_limits;
+    test_state_validator_context validator_context = {0u, 0u};
     mn_event event;
     int result = 0;
     int connected = 0, message_received = 0, host_message_received = 0;
@@ -64,6 +85,19 @@ int main(void) {
     auto_scanner = mn_create(&auto_config);
     CHECK(host != NULL && client != NULL && scanner != NULL && auto_scanner != NULL,
           "create independent host, client and discovery instances");
+    mn_player_state_limits_init(&state_limits);
+    state_limits.max_abs_position = 100.0f;
+    state_limits.max_abs_velocity = 20.0f;
+    invalid_state_limits = state_limits;
+    invalid_state_limits.max_abs_velocity = -1.0f;
+    CHECK(!mn_set_player_state_validation(host, &invalid_state_limits,
+                                          test_player_state_validator,
+                                          &validator_context),
+          "reject invalid negative remote-state limits");
+    CHECK(mn_set_player_state_validation(host, &state_limits,
+                                         test_player_state_validator,
+                                         &validator_context),
+          "configure host-side bounds and an application state validator");
     interface_count = mn_get_interfaces(interfaces, 64);
     CHECK(interface_count > 0, "enumerate local IPv4 network interfaces");
     for (interface_index = 0; interface_index < interface_count && interface_index < 64;
@@ -167,6 +201,62 @@ int main(void) {
     CHECK(received.position.x == 12.5f && received.position.y == -3.25f &&
           received.score == 7 && received.appearance[0] == 12,
           "player snapshot fields survive wire serialisation");
+
+    state.position.x = 101.0f;
+    CHECK(mn_set_local_player(client, &state),
+          "client can stage a position outside the host's stricter game bounds");
+    for (iteration = 0; iteration < 30; ++iteration) {
+        mn_update(client, 0.01f);
+        mn_update(host, 0.01f);
+        sleep_ms(5);
+    }
+    CHECK(mn_get_player(host, client_info.local_player_id, &received) &&
+          received.position.x == 12.5f && received.score == 7,
+          "host rejects remote positions beyond the configured absolute limit");
+
+    state.position.x = 12.5f;
+    state.velocity.x = 21.0f;
+    CHECK(mn_set_local_player(client, &state),
+          "client can stage a velocity outside the host's stricter game bounds");
+    for (iteration = 0; iteration < 30; ++iteration) {
+        mn_update(client, 0.01f);
+        mn_update(host, 0.01f);
+        sleep_ms(5);
+    }
+    CHECK(mn_get_player(host, client_info.local_player_id, &received) &&
+          received.position.x == 12.5f && received.velocity.x == 1.0f &&
+          received.score == 7,
+          "host rejects remote velocity beyond the configured absolute limit");
+    CHECK(validator_context.calls == 0u,
+          "application callback is not invoked for states rejected by built-in bounds");
+
+    state.position.x = 13.0f;
+    state.velocity.x = 1.0f;
+    state.score = 6;
+    CHECK(mn_set_local_player(client, &state),
+          "client can stage an application-invalid score update");
+    for (iteration = 0; iteration < 30; ++iteration) {
+        mn_update(client, 0.01f);
+        mn_update(host, 0.01f);
+        sleep_ms(5);
+    }
+    CHECK(mn_get_player(host, client_info.local_player_id, &received) &&
+          received.position.x == 12.5f && received.score == 7 &&
+          validator_context.calls > 0u &&
+          validator_context.rejected_score_regressions > 0u,
+          "application callback rejects score regression without replacing accepted state");
+
+    state.score = 8;
+    CHECK(mn_set_local_player(client, &state),
+          "client stages a valid state after a rejected update");
+    for (iteration = 0; iteration < 30; ++iteration) {
+        mn_update(client, 0.01f);
+        mn_update(host, 0.01f);
+        sleep_ms(5);
+    }
+    CHECK(mn_get_player(host, client_info.local_player_id, &received) &&
+          received.position.x == 13.0f && received.score == 8,
+          "host accepts later state that passes bounds and application validation");
 
     CHECK(mn_send_message(client, 0, 42, "client-to-host", 14),
           "client sends an application message");

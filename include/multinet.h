@@ -7,9 +7,9 @@
 extern "C" {
 #endif
 #define MN_VERSION_MAJOR 0
-#define MN_VERSION_MINOR 3
+#define MN_VERSION_MINOR 4
 #define MN_VERSION_PATCH 0
-#define MN_VERSION_STRING "0.3.0"
+#define MN_VERSION_STRING "0.4.0"
 #define MN_MAX_PLAYERS 16u
 #define MN_MAX_ROOMS 32u
 #define MN_PLAYER_NAME_LENGTH 24u
@@ -56,6 +56,20 @@ typedef struct mn_player {
     uint32_t flags;             /* Application-defined bit field. */
     uint16_t appearance[4];     /* Application-defined cosmetic identifiers. */
 } mn_player;
+
+/* Host-side, per-axis limits for client-reported player state. A value of zero
+   disables that additional bound; finite-value sanity checks still apply. */
+typedef struct mn_player_state_limits {
+    float max_abs_position;
+    float max_abs_velocity;
+} mn_player_state_limits;
+
+/* Called synchronously by the host while processing a remote state update.
+   Return non-zero to accept it. Both player records have server-assigned IDs
+   and names. The previous record is the last accepted state. */
+typedef int (*mn_player_state_validator)(const mn_player *previous,
+                                         const mn_player *incoming,
+                                         void *user_data);
 
 typedef struct mn_room {
     char name[MN_ROOM_NAME_LENGTH];
@@ -192,6 +206,14 @@ void mn_update(mn_instance *instance, float dt_seconds);
 /* Replicated state and readback. These functions copy data into caller-owned
    memory; returned pointers never refer to mutable internal storage. */
 int mn_set_local_player(mn_instance *instance, const mn_player *player);
+/* Configure host-side validation for remote player state. Passing NULL for
+   limits restores broad defaults; passing NULL for validator disables the
+   application callback. Callback user_data remains owned by the caller. */
+void mn_player_state_limits_init(mn_player_state_limits *limits);
+int mn_set_player_state_validation(mn_instance *instance,
+                                   const mn_player_state_limits *limits,
+                                   mn_player_state_validator validator,
+                                   void *user_data);
 void mn_get_info(const mn_instance *instance, mn_info *out_info);
 size_t mn_get_players(const mn_instance *instance, mn_player *players, size_t capacity);
 int mn_get_player(const mn_instance *instance, uint32_t player_id, mn_player *out_player);

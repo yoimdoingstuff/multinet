@@ -119,6 +119,9 @@ struct mn_instance {
     mn_config config;
     mn_info info;
     mn_player local_player;
+    mn_player_state_limits state_limits;
+    mn_player_state_validator state_validator;
+    void *state_validator_user_data;
     mn_player players[MN_MAX_PLAYERS];
     mn_room rooms[MN_MAX_ROOMS];
     size_t room_count;
@@ -631,7 +634,23 @@ static int mn_player_is_valid(const mn_player *player) {
            mn_float_is_valid(player->velocity.z);
 }
 
-
+static int mn_player_within_state_limits(const mn_instance *instance,
+                                         const mn_player *player) {
+    const mn_player_state_limits *limits = &instance->state_limits;
+    const float position_limit = limits->max_abs_position;
+    const float velocity_limit = limits->max_abs_velocity;
+    if (position_limit > 0.0f &&
+        (fabs((double)player->position.x) > (double)position_limit ||
+         fabs((double)player->position.y) > (double)position_limit ||
+         fabs((double)player->position.z) > (double)position_limit))
+        return 0;
+    if (velocity_limit > 0.0f &&
+        (fabs((double)player->velocity.x) > (double)velocity_limit ||
+         fabs((double)player->velocity.y) > (double)velocity_limit ||
+         fabs((double)player->velocity.z) > (double)velocity_limit))
+        return 0;
+    return 1;
+}
 
 static int mn_decode_player(mn_player *player, const uint8_t *in) {
     size_t offset = 0;
@@ -1767,15 +1786,28 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
             if (peer->has_state_sequence &&
                 !mn_sequence_is_newer(sequence, peer->last_state_sequence)) return;
             if (peer->state_cooldown > 0.0f) return;
-            if (!mn_decode_player(&player, payload + 12)) return;
+
+            /* Consume the sequence and cooldown even for rejected state so a
+               peer cannot bypass the packet rate limit with invalid payloads. */
             peer->last_state_sequence = sequence;
             peer->has_state_sequence = 1;
             peer->state_cooldown = instance->config.heartbeat_seconds * 0.5f;
             if (peer->state_cooldown < 0.01f) peer->state_cooldown = 0.01f;
-            peer->silence = 0.0f;
+
+            if (!mn_decode_player(&player, payload + 12)) return;
             player.id = peer->id;
             mn_copy_text(player.name, sizeof(player.name), peer->player.name);
+            if (!mn_player_within_state_limits(instance, &player)) return;
+            if (instance->state_validator &&
+                !instance->state_validator(&peer->player, &player,
+                                           instance->state_validator_user_data))
+                return;
+
+            /* Only accepted state refreshes the peer timeout or replaces the
+               last known-good state exposed to the rest of the application. */
+            peer->silence = 0.0f;
             peer->player = player;
+            mn_refresh_host_players(instance);
             return;
         }
         if (type == MN_PKT_LEAVE && payload_size == 8u) {
@@ -1919,6 +1951,12 @@ static void mn_handle_packet(mn_instance *instance, const uint8_t *packet,
     }
 }
 
+void mn_player_state_limits_init(mn_player_state_limits *limits) {
+    if (!limits) return;
+    limits->max_abs_position = 1000000.0f;
+    limits->max_abs_velocity = 1000000.0f;
+}
+
 void mn_config_init(mn_config *config) {
     if (!config) return;
     memset(config, 0, sizeof(*config));
@@ -1938,6 +1976,7 @@ mn_instance *mn_create(const mn_config *config) {
     instance = (mn_instance *)calloc(1, sizeof(*instance));
     if (!instance) return NULL;
     instance->config = config ? *config : defaults;
+    mn_player_state_limits_init(&instance->state_limits);
     if (instance->config.port == 0) instance->config.port = defaults.port;
     if (instance->config.app_id == 0) instance->config.app_id = defaults.app_id;
     if (instance->config.max_players < 2 || instance->config.max_players > MN_MAX_PLAYERS)
@@ -2443,6 +2482,28 @@ int mn_set_local_player(mn_instance *instance, const mn_player *player) {
     mn_copy_text(instance->local_player.name, sizeof(instance->local_player.name),
                  instance->info.local_name);
     if (instance->info.role == MN_ROLE_HOST) mn_refresh_host_players(instance);
+    return 1;
+}
+
+int mn_set_player_state_validation(mn_instance *instance,
+                                   const mn_player_state_limits *limits,
+                                   mn_player_state_validator validator,
+                                   void *user_data) {
+    mn_player_state_limits defaults;
+    if (!instance || !instance->ready) return 0;
+    if (limits) {
+        if (!mn_float_is_valid(limits->max_abs_position) ||
+            !mn_float_is_valid(limits->max_abs_velocity) ||
+            limits->max_abs_position < 0.0f ||
+            limits->max_abs_velocity < 0.0f)
+            return 0;
+        instance->state_limits = *limits;
+    } else {
+        mn_player_state_limits_init(&defaults);
+        instance->state_limits = defaults;
+    }
+    instance->state_validator = validator;
+    instance->state_validator_user_data = user_data;
     return 1;
 }
 

@@ -59,7 +59,7 @@ For another PC on the same permitted LAN, replace `127.0.0.1` with the host PC's
 
 Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. Use `./build/multinet_demo interfaces` to list local IPv4 adapters. Use `./build/multinet_demo scan-mdns` to discover rooms through DNS-SD/mDNS when the local network supports multicast. `./build/multinet_demo host-on 192.168.1.20 Alice` and `./build/multinet_demo join-from 192.168.1.30 192.168.1.20 Bob` bind each side to a chosen interface; `./build/multinet_demo scan-on 192.168.1.30` scans through that adapter. Discover nearby rooms with `./build/multinet_demo scan`, which automatically tries global LAN broadcast, per-interface subnet broadcast and mDNS/DNS-SD. When broadcast discovery is filtered, probe a known host directly with `./build/multinet_demo scan 27890 192.168.1.10`, or skip discovery and join directly with `./build/multinet_demo join 192.168.1.10 Bob`. Host, join and scan accept custom UDP ports.
 
-The loopback integration test exercises independent instances, player replication, best-effort and acknowledged messages in both directions, delivery IDs and per-player ACKs for a 15-recipient broadcast, pending-delivery failure on departure, ping, match start, the full 16-player limit and player departure. This is not a substitute for testing two physical Windows PCs over a real LAN.
+The loopback integration test exercises independent instances, player replication, host-side position/velocity bounds and application validation callbacks, best-effort and acknowledged messages in both directions, delivery IDs and per-player ACKs for a 15-recipient broadcast, pending-delivery failure on departure, ping, match start, the full 16-player limit and player departure. This is not a substitute for testing two physical Windows PCs over a real LAN.
 
 ## Quick API example
 
@@ -91,7 +91,7 @@ int main(void) {
 }
 ```
 
-Version 0.3 adds delivery-ID reporting and acknowledgement/failure events for reliable messages, including pending-delivery failures when a recipient leaves. See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
+Version 0.4 adds configurable host-side remote-state bounds and an application validation callback. Version 0.3 added delivery-ID reporting and acknowledgement/failure events for reliable messages, including pending-delivery failures when a recipient leaves. See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
 
 ## Scope and limitations
 

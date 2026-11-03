@@ -32,6 +32,14 @@ Call `mn_update(instance, dt_seconds)` regularly, ideally once per game frame. S
 
 Call `mn_set_local_player()` with the latest local state. The host relays client state to the room in periodic snapshots. Use `mn_get_info()` for session details, `mn_get_players()` to copy the current roster, and `mn_get_player()` for ID-based lookup.
 
+### Host-side remote-state validation
+
+By default, incoming position and velocity components retain the broad finite-value safety ceiling of 1,000,000. A host can tighten those per-axis bounds with `mn_player_state_limits` and `mn_set_player_state_validation()`. Set either limit to zero to disable that additional bound. Invalid or negative limit values are rejected by the setter without changing the current policy.
+
+The optional `mn_player_state_validator` callback runs only on the host, after decoding and built-in bounds checks but before the incoming state is committed. It receives the last accepted state and a candidate state whose player ID and name have already been replaced with host-assigned identity. Return non-zero to accept or zero to reject. This is where the game should validate application-specific fields such as score changes, flags, movement rules, or whether a player may claim to be holed out. Rejected state does not replace the last accepted state or refresh that peer's timeout. The packet sequence and cooldown are still consumed to prevent invalid-state spam from bypassing rate limiting.
+
+Call the setter before hosting, or change the policy later from the instance's owning thread. The callback runs synchronously inside `mn_update()`; keep it fast and do not call state-mutating MultiNet functions on the same instance from inside it. The callback's `user_data` pointer remains owned by the application and must stay valid while registered. This is an application validation hook, not a substitute for cryptographic authentication or a fully authoritative game simulation.
+
 For an application-defined event stream, call `mn_send_message()`. Channel IDs are chosen by the game. A target ID of zero broadcasts to the room; host code may also target one player ID. Clients send to the host, which relays the message to matching recipients. Messages are best-effort and limited to `MN_MAX_MESSAGE_BYTES`.
 
 Use `mn_send_reliable_message()` for lobby commands, ready state, match results and other events that must arrive. It queues each delivery, assigns a message ID, waits for an acknowledgement, retransmits on timeout and suppresses duplicate deliveries. Use `mn_send_reliable_message_ex()` to receive the delivery ID, then match it against `MN_EVENT_MESSAGE_ACKNOWLEDGED` or `MN_EVENT_MESSAGE_FAILED`. Clients send to the host (target 0); the host may target a player or broadcast. The bounded queue holds up to `MN_MAX_RELIABLE_PENDING` pending recipient deliveries. A host broadcast produces one acknowledgement event per recipient, with `event.player_id` identifying that player; client-to-host acknowledgement events use player ID zero to identify the host. `event.delivery_id` carries the ID returned by the extended API. The event's `channel` identifies the application channel. If the queue is full, the call fails and the application should retry later. After the retry limit, `MN_EVENT_ERROR` reports the failed delivery. A client-to-host ACK confirms delivery to the host; the host independently queues fan-out to the other room members. This is reliable delivery while the peer remains reachable, not durable storage across disconnects or process restarts.
@@ -54,7 +62,7 @@ MultiNet does not render or simulate balls. The game owns physics, interpolation
 
 ## Threading
 
-The current implementation is intended to be called from one application thread. Do not call `mn_update()`, `mn_leave()` or state-mutating functions concurrently on the same instance. Multiple independent instances are supported, but each instance should have one owning thread.
+The current implementation is intended to be called from one application thread. Do not call `mn_update()`, `mn_leave()` or state-mutating functions concurrently on the same instance. Multiple independent instances are supported, but each instance should have one owning thread. A registered state-validation callback is invoked by `mn_update()` on that same owning thread.
 
 ## Error handling
 

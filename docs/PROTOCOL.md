@@ -29,7 +29,7 @@ The token is a basic session credential, not encryption. Traffic is not confiden
 
 Player states are periodic snapshots. They are not individually acknowledged. Custom messages are best-effort UDP datagrams and may be lost, duplicated or reordered. Player-state updates and host snapshots include wrap-safe sequence numbers, and the host applies a simple per-peer state/message cooldown. Best-effort application messages remain unacknowledged. The reliable channel adds message IDs, ACK packets, bounded retransmission and duplicate suppression. Duplicate reliable packets are re-ACKed even during the ordinary message cooldown, and received message IDs are only remembered after the host has confirmed queue capacity. A client-to-host reliable call confirms delivery to the host; the host then independently queues delivery to the other room members. Pending deliveries are held in a finite in-memory queue and are not persisted across disconnects or process restarts. Applications can obtain the delivery ID from the extended send API and receive per-recipient acknowledged/failed events. Duplicate packets are re-ACKed even during the message cooldown; the receiver only records an ID as seen after it has capacity to accept the delivery. Ping packets measure one outstanding round trip at a time and expire after five seconds.
 
-The host relays client-reported player state. Game code must treat it as untrusted and independently validate speed, position, score changes, hole completion and any gameplay-affecting action. Cosmetic identifiers should never confer physics or visibility advantages.
+The host relays client-reported player state, but can now enforce configurable absolute position and velocity bounds and invoke an application callback before committing each accepted update. The default bounds preserve the broad 1,000,000-unit finite-value ceiling. Games should use the callback to validate score changes, flags, shot state, hole completion and other gameplay-specific rules. A rejected state does not refresh the peer timeout or replace the last accepted state. These checks reduce accidental or obviously invalid state injection; they do not make the simulation authoritative or prevent a modified client from choosing values that happen to pass the configured rules. Cosmetic identifiers should never confer physics or visibility advantages.
 
 ## Network scope
 
@@ -37,9 +37,10 @@ Discovery supports IPv4 global/subnet broadcast, explicit-interface directed bro
 
 ## Planned protocol hardening
 
-- Sequence numbers and replay/out-of-order handling.
-- Per-peer packet/message rate limits and maximum state-change thresholds.
-- Host-side authoritative input/shot validation and match-result verification.
+- [x] Sequence numbers and replay/out-of-order handling.
+- [x] Per-peer packet/message rate limits and configurable absolute state bounds.
+- [x] Host-side application callback for game-specific remote-state validation.
+- [ ] Host-side authoritative input/shot validation and match-result verification.
 - Optional encrypted and authenticated transport for untrusted networks.
 - IPv6 and standards-based service discovery.
 - Explicit player identity/pairing and encrypted peer authentication for untrusted networks.
