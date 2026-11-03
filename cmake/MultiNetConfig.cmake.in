@@ -1,4 +1,9 @@
 @PACKAGE_INIT@
 
+include(CMakeFindDependencyMacro)
+if(@MULTINET_ENABLE_ENCRYPTION@ AND UNIX AND NOT WIN32)
+    find_dependency(OpenSSL REQUIRED COMPONENTS Crypto)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/MultiNetTargets.cmake")
 check_required_components(MultiNet)
