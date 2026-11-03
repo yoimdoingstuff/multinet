@@ -45,10 +45,10 @@ static int test_hmac_sha256_vector(void) {
            memcmp(actual, expected, sizeof(expected)) == 0;
 }
 
-static int test_device_id_nonzero(const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
+static int test_bytes_nonzero(const uint8_t *bytes, size_t size) {
     size_t i;
     uint8_t value = 0;
-    for (i = 0; i < MN_DEVICE_ID_BYTES; ++i) value |= device_id[i];
+    for (i = 0; i < size; ++i) value |= bytes[i];
     return value != 0;
 }
 
@@ -144,8 +144,8 @@ int main(void) {
           "configure authenticated encryption before opening the room");
     CHECK(mn_get_device_id(client, client_device_id) &&
           mn_get_device_secret(client, client_device_secret) &&
-          test_device_id_nonzero(client_device_id) &&
-          test_device_id_nonzero(client_device_secret),
+          test_bytes_nonzero(client_device_id, MN_DEVICE_ID_BYTES) &&
+          test_bytes_nonzero(client_device_secret, MN_DEVICE_SECRET_BYTES),
           "client receives a non-zero persistent device ID and private secret");
     mn_player_state_limits_init(&state_limits);
     state_limits.max_abs_position = 100.0f;

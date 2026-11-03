@@ -980,11 +980,6 @@ static size_t mn_find_paired_device_index(
     return MN_MAX_PAIRED_DEVICES;
 }
 
-static int mn_is_device_paired(const mn_instance *instance,
-                               const uint8_t device_id[MN_DEVICE_ID_BYTES]) {
-    return mn_find_paired_device_index(instance, device_id) < MN_MAX_PAIRED_DEVICES;
-}
-
 static int mn_make_pairing_proof(
     const uint8_t device_secret[MN_DEVICE_SECRET_BYTES],
     const uint8_t device_id[MN_DEVICE_ID_BYTES],
@@ -3136,7 +3131,7 @@ int mn_approve_pairing(mn_instance *instance,
                 mn_send_to(instance, &peer->address, deny_packet, deny_size);
                 mn_emit_pairing_event(instance, MN_EVENT_PAIRING_REJECTED,
                                       peer, "Pairing request rejected");
-                memset(peer, 0, sizeof(*peer));
+                mn_secure_zero(peer, sizeof(*peer));
             }
             return 1;
         }
