@@ -29,12 +29,14 @@
 
 - [x] Add DNS-SD/mDNS service discovery as another LAN room-discovery fallback.
 - [x] Add one automatic discovery mode that runs global broadcast, subnet-directed broadcast and mDNS together.
-- [ ] Add discovery tests across isolated local interfaces where CI permits.
+- [x] Send and receive mDNS queries/announcements on all active IPv4 adapters; advertise multiple host A records and select the client-local subnet address.
+- [ ] Add discovery tests across physically isolated Ethernet/Wi-Fi/Bluetooth PAN interfaces where CI permits; loopback CI cannot prove hardware routing.
 - [x] Add basic client-to-host and host-to-client ping/latency measurement.
 - [x] Enumerate OS IPv4 adapters and support explicit binding for Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP interfaces.
-- [ ] Add native Bluetooth RFCOMM support as an optional transport backend.
+- [ ] Add native Bluetooth RFCOMM support as an optional transport backend (Bluetooth PAN over OS-managed IP is available today; RFCOMM needs a separate stream transport backend).
 - [ ] Add IPv6 transport.
 - [ ] Add TCP as an optional direct-connect transport for networks where UDP is unavailable.
+- [x] Add a native Windows GUI demo with adapter selection, host/search/join/leave controls, live player list, messages and status log.
 
 ## Integration and packaging
 

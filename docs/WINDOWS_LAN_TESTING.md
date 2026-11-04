@@ -30,7 +30,9 @@ Run each case separately and record whether it succeeds:
 - [ ] Host and client bound to explicit Ethernet addresses.
 - [ ] Host and client bound to explicit Wi-Fi addresses.
 - [ ] If available and permitted, test OS-managed Wi-Fi Direct and Bluetooth PAN IP adapters.
-- [ ] With multiple adapters connected, confirm `join-from` selects the intended source adapter and the session uses that route.
+- [ ] With multiple adapters connected, confirm the GUI adapter dropdown and `join-from` select the intended source adapter.
+- [ ] With Ethernet and Wi-Fi active together, verify mDNS returns the address on the client's matching subnet.
+- [ ] If available and permitted, repeat discovery/join across Bluetooth PAN and Wi-Fi Direct using the GUI adapter selector.
 - [ ] Repeat with a non-default UDP port and verify both endpoints use the same configured port.
 
 Do not simulate a blocked network by disabling security controls on a managed device. Use a test network or an administrator-approved firewall rule.

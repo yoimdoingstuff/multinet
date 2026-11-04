@@ -39,7 +39,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The build produces `multinet` (static library), `multinet_demo` (interactive demo), `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example) and `multinet_tests` (loopback integration test). Push a version tag such as `v0.5.0` to trigger the release workflow, which verifies version consistency, packages Windows/Linux builds and publishes a GitHub Release with SHA-256 sidecars. Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
+The build produces `multinet` (static library), an interactive demo, `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example) and `multinet_tests` (loopback integration test). On Windows, `multinet_demo.exe` is a native GUI application designed to open by double-click; the terminal version is `multinet_cli_demo.exe`. On Linux, `multinet_demo` remains the terminal demo. Push a version tag such as `v0.6.0` to trigger the release workflow, which verifies version consistency, packages Windows/Linux builds and publishes a GitHub Release with SHA-256 sidecars. Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
 
 An optional Clang/libFuzzer target exercises malformed packet framing, room-offer parsing and player-state decoding. It is separate from the normal cross-platform build:
 
@@ -73,21 +73,29 @@ Each process moves its own point and prints all replicated player positions once
 
 ## Demo
 
+### Windows graphical demo
+
+Run `multinet_demo.exe` from the build or install `bin` directory. The window lets you host a room, search for rooms, join a selected room or manual IP address, choose a local network adapter, view players/events, send a test message, start a match and leave. Select an active Bluetooth PAN or Wi-Fi Direct adapter to bind the room or client to that OS-managed IP link. Pair/connect devices in Windows first; MultiNet does not silently enable radios or create a PAN group.
+
+The GUI timer keeps the network update loop running while the window is open. Keep the app open during play. The small chat and 2D object examples remain command-line samples; on Windows they display a help dialog when launched without arguments.
+
+### Terminal demo
+
 Open two terminals on one PC. Start the host:
 
 ```sh
-./build/multinet_demo host Alice "Test Room"
+./build/multinet_cli_demo host Alice "Test Room"
 ```
 
 Join from the second terminal:
 
 ```sh
-./build/multinet_demo join 127.0.0.1 Bob
+./build/multinet_cli_demo join 127.0.0.1 Bob
 ```
 
 For another PC on the same permitted LAN, replace `127.0.0.1` with the host PC's local IPv4 address. The default UDP port is `27890`; the host firewall may need to allow it. The demo does not tunnel traffic or bypass network restrictions.
 
-Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. Use `./build/multinet_demo interfaces` to list local IPv4 adapters. Use `./build/multinet_demo scan-mdns` to discover rooms through DNS-SD/mDNS when the local network supports multicast. `./build/multinet_demo host-on 192.168.1.20 Alice` and `./build/multinet_demo join-from 192.168.1.30 192.168.1.20 Bob` bind each side to a chosen interface; `./build/multinet_demo scan-on 192.168.1.30` scans through that adapter. Discover nearby rooms with `./build/multinet_demo scan`, which automatically tries global LAN broadcast, per-interface subnet broadcast and mDNS/DNS-SD. When broadcast discovery is filtered, probe a known host directly with `./build/multinet_demo scan 27890 192.168.1.10`, or skip discovery and join directly with `./build/multinet_demo join 192.168.1.10 Bob`. Host, join and scan accept custom UDP ports.
+Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. Use `./build/multinet_cli_demo interfaces` on Windows or `./build/multinet_demo interfaces` on Linux to list local IPv4 adapters. Use `./build/multinet_demo scan-mdns` to discover rooms through DNS-SD/mDNS when the local network supports multicast. `./build/multinet_demo host-on 192.168.1.20 Alice` and `./build/multinet_demo join-from 192.168.1.30 192.168.1.20 Bob` bind each side to a chosen interface; `./build/multinet_demo scan-on 192.168.1.30` scans through that adapter. Discover nearby rooms with `./build/multinet_demo scan`, which automatically tries global LAN broadcast, per-interface subnet broadcast and mDNS/DNS-SD. When broadcast discovery is filtered, probe a known host directly with `./build/multinet_demo scan 27890 192.168.1.10`, or skip discovery and join directly with `./build/multinet_demo join 192.168.1.10 Bob`. Host, join and scan accept custom UDP ports.
 
 The loopback integration test exercises independent instances, player replication, host-side position/velocity bounds and application validation callbacks, best-effort and acknowledged messages in both directions, delivery IDs and per-player ACKs for a 15-recipient broadcast, pending-delivery failure on departure, ping, match start, the full 16-player limit and player departure. This is not a substitute for testing two physical Windows PCs over a real LAN.
 
@@ -131,11 +139,11 @@ int main(void) {
 }
 ```
 
-Version 0.5 adds AES-256-GCM authenticated UDP packets, persistent device identities, host-approved HMAC challenge-response pairing and paired-device credential storage. Version 0.4 added configurable host-side remote-state bounds and an application validation callback. Version 0.3 added delivery-ID reporting and acknowledgement/failure events for reliable messages, including pending-delivery failures when a recipient leaves. See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
+Version 0.6 adds a double-clickable Windows GUI demo and multi-adapter mDNS discovery/address selection. Version 0.5 added AES-256-GCM authenticated UDP packets, persistent device identities, host-approved HMAC challenge-response pairing and paired-device credential storage. Version 0.4 added configurable host-side remote-state bounds and an application validation callback. Version 0.3 added delivery-ID reporting and acknowledgement/failure events for reliable messages, including pending-delivery failures when a recipient leaves. See [`docs/API.md`](docs/API.md) for the full API and Golfgame mapping, [`docs/CONNECTION_FALLBACKS.md`](docs/CONNECTION_FALLBACKS.md) for the discovery/join fallback order, [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for packet format and trust model, and [`docs/GOLFGAME_EXTRACTION.md`](docs/GOLFGAME_EXTRACTION.md) for extraction details.
 
 ## Scope and limitations
 
-MultiNet currently supports ordinary IPv4 UDP over operating-system-provided interfaces. It can use Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN when those systems expose an IPv4 adapter. Discovery includes IPv4 broadcast, directed/unicast probing and DNS-SD/mDNS. It does not implement raw Bluetooth RFCOMM/BLE or create/pair Wi-Fi Direct groups itself. IPv6, NAT traversal, public matchmaking, multi-hop relaying and covert tunnelling are not included. Optional AES-256-GCM encryption uses a shared 32-byte pre-shared room key that the application must distribute out of band. Every member with that key can decrypt room traffic; this protects against outsiders without the key, not malicious room members. mDNS discovery still exposes room metadata, and the protocol does not yet provide forward secrecy or automated key exchange. Player-state snapshots and `mn_send_message()` custom messages are best-effort UDP datagrams. `mn_send_reliable_message()` adds bounded acknowledgement/retry and duplicate suppression for application events, but it is not durable storage across disconnects. The host relays client-reported state; it is not an authoritative simulation or anti-cheat system. Treat all remote state as untrusted and validate it in the game.
+MultiNet currently supports ordinary IPv4 UDP over operating-system-provided interfaces. It can use Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN when those systems expose an IPv4 adapter. Discovery includes IPv4 broadcast and directed/unicast probing on usable adapters, plus DNS-SD/mDNS queries and announcements across active IPv4 interfaces. It does not implement native Bluetooth RFCOMM/BLE or create/pair Wi-Fi Direct groups itself. Bluetooth PAN is supported as a normal OS-managed IP adapter when the OS has brought the link up. IPv6, NAT traversal, public matchmaking, multi-hop relaying and covert tunnelling are not included. Optional AES-256-GCM encryption uses a shared 32-byte pre-shared room key that the application must distribute out of band. Every member with that key can decrypt room traffic; this protects against outsiders without the key, not malicious room members. mDNS discovery still exposes room metadata, and the protocol does not yet provide forward secrecy or automated key exchange. Player-state snapshots and `mn_send_message()` custom messages are best-effort UDP datagrams. `mn_send_reliable_message()` adds bounded acknowledgement/retry and duplicate suppression for application events, but it is not durable storage across disconnects. The host relays client-reported state; it is not an authoritative simulation or anti-cheat system. Treat all remote state as untrusted and validate it in the game.
 
 ## License
 
