@@ -7,9 +7,9 @@
 extern "C" {
 #endif
 #define MN_VERSION_MAJOR 0
-#define MN_VERSION_MINOR 7
+#define MN_VERSION_MINOR 8
 #define MN_VERSION_PATCH 0
-#define MN_VERSION_STRING "0.7.0"
+#define MN_VERSION_STRING "0.8.0"
 #define MN_MAX_PLAYERS 16u
 #define MN_MAX_ROOMS 32u
 #define MN_MAX_JOIN_ALLOWLIST 16u

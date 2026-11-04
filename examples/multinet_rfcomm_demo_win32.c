@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "multinet_rfcomm.h"
+#include "multinet_stream.h"
 
 #define ID_NAME       101
 #define ID_HOST       102
@@ -38,15 +39,14 @@ static HWND g_log;
 static HWND g_message;
 static HWND g_status;
 static mn_rfcomm *g_connection;
+static mn_stream *g_stream;
+static int g_stream_error_logged;
 static mn_rfcomm_device g_devices[MN_RFCOMM_MAX_DEVICES];
 static size_t g_device_count;
 static char g_scan_error[160];
 static HANDLE g_scan_thread;
 static volatile LONG g_scan_running;
 static char g_last_status[256];
-static char g_pending_send[2048];
-static size_t g_pending_size;
-static size_t g_pending_offset;
 
 static HWND make_control(const char *class_name, const char *caption,
                          DWORD style, int id, HWND parent) {
@@ -80,6 +80,20 @@ static void get_text(HWND control, char *buffer, size_t capacity,
 
 static int secure_link_required(void) {
     return SendMessageA(g_secure, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+static int reset_framed_stream(void) {
+    mn_stream_transport transport;
+    if (g_stream) {
+        mn_stream_destroy(g_stream);
+        g_stream = NULL;
+    }
+    if (!g_connection ||
+        !mn_stream_transport_from_rfcomm(g_connection, &transport))
+        return 0;
+    g_stream = mn_stream_create(&transport, 4096u);
+    g_stream_error_logged = 0;
+    return g_stream != NULL;
 }
 
 static void update_status(void) {
@@ -246,62 +260,49 @@ static void do_join(void) {
 static void do_send(void) {
     char text[1500];
     size_t length;
+    mn_rfcomm_info info;
     get_text(g_message, text, sizeof(text), "");
     if (!text[0]) return;
-    if (g_pending_size != g_pending_offset) {
-        add_log("The previous message is still waiting to be sent.");
+    if (!g_stream) {
+        add_log("The framed message channel is not available.");
         return;
     }
-    if (!g_connection) return;
-    {
-        mn_rfcomm_info info;
-        mn_rfcomm_get_info(g_connection, &info);
-        if (info.state != MN_RFCOMM_CONNECTED) {
-            add_log("Connect to a Bluetooth peer before sending.");
-            return;
-        }
+    mn_rfcomm_get_info(g_connection, &info);
+    if (info.state != MN_RFCOMM_CONNECTED) {
+        add_log("Connect to a Bluetooth peer before sending.");
+        return;
     }
     length = strlen(text);
-    if (length + 2u > sizeof(g_pending_send)) {
-        add_log("Message is too long.");
+    if (!mn_stream_send(g_stream, 1u, text, length)) {
+        add_log("The framed stream send queue is full or the message is too large.");
         return;
     }
-    memcpy(g_pending_send, text, length);
-    g_pending_send[length] = '\r';
-    g_pending_send[length + 1u] = '\n';
-    g_pending_size = length + 2u;
-    g_pending_offset = 0;
     SetWindowTextA(g_message, "");
 }
 
-static void flush_pending_send(void) {
-    size_t sent = 0;
-    if (g_pending_offset >= g_pending_size) {
-        g_pending_offset = 0;
-        g_pending_size = 0;
-        return;
-    }
-    if (!mn_rfcomm_write(g_connection, g_pending_send + g_pending_offset,
-                         g_pending_size - g_pending_offset, &sent)) {
-        add_log("Bluetooth stream write failed.");
-        g_pending_offset = g_pending_size = 0;
-        return;
-    }
-    g_pending_offset += sent;
-    if (g_pending_offset >= g_pending_size)
-        g_pending_offset = g_pending_size = 0;
-}
-
 static void poll_incoming(void) {
-    char buffer[1025];
+    char buffer[4097];
     size_t received;
+    uint16_t channel;
+    int result;
+    if (!g_stream) return;
     for (;;) {
-        if (!mn_rfcomm_read(g_connection, buffer, sizeof(buffer) - 1u,
-                            &received))
+        result = mn_stream_poll(g_stream, &channel, buffer,
+                                sizeof(buffer) - 1u, &received);
+        if (result == 0) break;
+        if (result < 0) {
+            add_log("Incoming framed message exceeded the GUI buffer.");
             break;
-        if (received == 0) break;
+        }
         buffer[received] = '\0';
-        add_log(buffer);
+        if (channel == 1u) add_log(buffer);
+        else {
+            char line[128];
+            (void)snprintf(line, sizeof(line),
+                           "Received message on application channel %u.",
+                           (unsigned)channel);
+            add_log(line);
+        }
     }
 }
 
@@ -377,6 +378,14 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
                 return -1;
             }
             create_controls(window);
+            if (!reset_framed_stream()) {
+                mn_rfcomm_destroy(g_connection);
+                g_connection = NULL;
+                MessageBoxA(window,
+                    "Could not initialise the framed stream adapter.",
+                    "MultiNet RFCOMM", MB_OK | MB_ICONERROR);
+                return -1;
+            }
             SetTimer(window, 1, 33, NULL);
             add_log("MultiNet native Bluetooth RFCOMM test ready.");
             add_log("Pair devices in Windows if prompted. No radio is enabled automatically.");
@@ -394,9 +403,11 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
         }
         case WM_TIMER:
             if (g_connection) {
-                (void)mn_rfcomm_update(g_connection);
+                if (!mn_stream_update(g_stream) && !g_stream_error_logged) {
+                    add_log(mn_stream_last_error(g_stream));
+                    g_stream_error_logged = 1;
+                }
                 poll_incoming();
-                flush_pending_send();
                 update_status();
             }
             return 0;
@@ -416,8 +427,8 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
                     return 0;
                 case ID_DISCONNECT:
                     mn_rfcomm_close(g_connection);
-                    g_pending_offset = g_pending_size = 0;
-                    add_log("Bluetooth connection closed.");
+                    (void)reset_framed_stream();
+                    add_log("Bluetooth connection closed. The stream adapter is ready for another attempt.");
                     update_status();
                     return 0;
                 case ID_SEND:
@@ -431,6 +442,10 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
                 WaitForSingleObject(g_scan_thread, INFINITE);
                 CloseHandle(g_scan_thread);
                 g_scan_thread = NULL;
+            }
+            if (g_stream) {
+                mn_stream_destroy(g_stream);
+                g_stream = NULL;
             }
             if (g_connection) {
                 mn_rfcomm_destroy(g_connection);

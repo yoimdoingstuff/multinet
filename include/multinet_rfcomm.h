@@ -66,7 +66,8 @@ int mn_rfcomm_update(mn_rfcomm *connection);
 
 /* Non-blocking byte-stream I/O. read/write may transfer fewer bytes than
    requested; a successful call with *out_transferred == 0 means would-block.
-   Applications must provide their own framing for messages. */
+   Use multinet_stream.h and mn_stream_transport_from_rfcomm() for bounded,
+   channel-tagged message framing over this byte stream. */
 int mn_rfcomm_read(mn_rfcomm *connection, void *buffer, size_t capacity,
                    size_t *out_transferred);
 int mn_rfcomm_write(mn_rfcomm *connection, const void *data, size_t size,

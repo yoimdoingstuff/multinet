@@ -35,7 +35,9 @@
 - [x] Add basic client-to-host and host-to-client ping/latency measurement.
 - [x] Enumerate OS IPv4 adapters and support explicit binding for Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP interfaces.
 - [x] Add an experimental Windows RFCOMM one-peer stream API with SDP service registration/discovery, optional OS authentication + link encryption and a double-clickable test GUI.
-- [ ] Integrate RFCOMM sessions into a transport-independent MultiNet room API with stream framing, multiple peers and reconnection; the current prototype is not used by `mn_instance` or Golfgame.
+- [x] Add a transport-neutral framed-message API with application channels, fixed-endian message headers, bounded queues and correct partial read/write handling.
+- [x] Add an RFCOMM-to-stream adapter and update the Bluetooth GUI to use the framed-message layer.
+- [ ] Integrate stream transports into full MultiNet room/session semantics with multiple peers, identity, host approval, discovery and reconnection; the new framed API is currently a one-peer message channel, not a replacement for `mn_instance` or Golfgame.
 - [ ] Test RFCOMM discovery, pairing, secure connection, disconnect and reconnect across two physical Windows PCs.
 - [ ] Add IPv6 transport.
 - [ ] Add TCP as an optional direct-connect transport for networks where UDP is unavailable.
