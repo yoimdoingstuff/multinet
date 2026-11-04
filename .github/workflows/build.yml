@@ -54,6 +54,16 @@ jobs:
         run: cmake -S . -B build -A x64
       - name: Build library, demo and tests
         run: cmake --build build --config Release --parallel
+      - name: Smoke-test double-click GUI startup
+        shell: pwsh
+        run: |
+          $gui = Start-Process -FilePath ".\\build\\Release\\multinet_demo.exe" -PassThru
+          Start-Sleep -Seconds 2
+          $gui.Refresh()
+          if ($gui.HasExited) {
+            throw "The Windows GUI demo exited immediately instead of staying open."
+          }
+          Stop-Process -Id $gui.Id -Force
       - name: Run loopback integration tests
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Install package
