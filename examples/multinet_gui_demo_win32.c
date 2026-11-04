@@ -185,9 +185,17 @@ static void update_status(void) {
     mn_get_info(g_network, &info);
     switch (info.status) {
         case MN_STATUS_HOSTING:
-            (void)snprintf(line, sizeof(line), "Hosting '%s' | %u/%u players | UDP %u",
-                           info.room_name, (unsigned)info.player_count,
-                           (unsigned)info.max_players, (unsigned)info.local_port);
+            if (info.ping_available) {
+                (void)snprintf(line, sizeof(line),
+                               "Hosting '%s' | %u/%u players | UDP %u | last ping %.1f ms",
+                               info.room_name, (unsigned)info.player_count,
+                               (unsigned)info.max_players, (unsigned)info.local_port,
+                               info.ping_ms);
+            } else {
+                (void)snprintf(line, sizeof(line), "Hosting '%s' | %u/%u players | UDP %u",
+                               info.room_name, (unsigned)info.player_count,
+                               (unsigned)info.max_players, (unsigned)info.local_port);
+            }
             break;
         case MN_STATUS_CONNECTED:
             (void)snprintf(line, sizeof(line), "Connected to '%s' | %u players | ping %.1f ms",
