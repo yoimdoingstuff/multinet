@@ -508,7 +508,9 @@ int mn_rfcomm_join(mn_rfcomm *connection, const mn_rfcomm_device *device,
     ZeroMemory(&remote, sizeof(remote));
     remote.addressFamily = AF_BTH;
     remote.btAddr = (BTH_ADDR)device->address;
-    remote.serviceClassId = MN_RFCOMM_SERVICE_UUID;
+    /* SDP lookup already supplied the RFCOMM channel, so connect by port.
+       SOCKADDR_BTH treats serviceClassId as an alternative selector. */
+    ZeroMemory(&remote.serviceClassId, sizeof(remote.serviceClassId));
     remote.port = device->channel;
     connect_result = connect(socket_value, (SOCKADDR *)&remote, sizeof(remote));
     if (connect_result == SOCKET_ERROR) {
