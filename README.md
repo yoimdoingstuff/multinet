@@ -42,7 +42,7 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The build produces `multinet` (static library), an interactive UDP demo, `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example), `multinet_tests`, `multinet_rfcomm_tests`, `multinet_stream_tests` and `multinet_tcp_tests`. On Windows, `multinet_demo.exe` is the native UDP/LAN GUI and `multinet_rfcomm_demo.exe` is the separate Bluetooth RFCOMM test GUI; both open by double-click. The terminal UDP version is `multinet_cli_demo.exe`. On Linux, `multinet_demo` remains the terminal demo. Push a version tag such as `v0.8.0` to trigger the release workflow, which verifies version consistency, packages Windows/Linux builds and publishes a GitHub Release with SHA-256 sidecars. Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
+The build produces `multinet` (static library), an interactive UDP demo, `multinet_chat` (reliable one-shot chat example), `multinet_2d_object` (replicated 2D point example), `multinet_tests`, `multinet_rfcomm_tests`, `multinet_stream_tests` and `multinet_tcp_tests`. On Windows, `multinet_demo.exe` is the native UDP/LAN GUI, `multinet_rfcomm_demo.exe` is the Bluetooth RFCOMM test GUI, and `multinet_tcp_demo.exe` is the direct TCP test GUI; all open by double-click. The terminal UDP version is `multinet_cli_demo.exe`. On Linux, `multinet_demo` remains the terminal demo. Push a version tag such as `v0.8.0` to trigger the release workflow, which verifies version consistency, packages Windows/Linux builds and publishes a GitHub Release with SHA-256 sidecars. Install the library and CMake package with `cmake --install build --prefix install`. A consumer can then use `find_package(MultiNet CONFIG REQUIRED)` and link `MultiNet::MultiNet`. Disable optional targets with `-DMULTINET_BUILD_DEMO=OFF` or `-DMULTINET_BUILD_TESTS=OFF`.
 
 An optional Clang/libFuzzer target exercises malformed packet framing, room-offer parsing and player-state decoding. It is separate from the normal cross-platform build:
 
@@ -87,6 +87,13 @@ The GUI timer keeps the UDP network update loop running while the window is open
 Run `build\Release\\multinet_rfcomm_demo.exe` (or the installed `bin` copy) on two Windows PCs with Bluetooth radios. On one PC, enter a service/player name and click **Advertise service**. On the other, click **Find nearby services**, select the advertised entry and click **Connect selected**. The scan uses Windows Bluetooth device inquiry and SDP service discovery, so it can take several seconds. Send text in the bottom field to verify the stream in both directions. Pair devices in Windows when prompted; leave **Require Bluetooth pairing + encryption** checked unless you have a specific reason not to.
 
 This is an experimental, one-peer RFCOMM byte-stream test backend. It is not yet wired into `mn_instance`, the 16-player UDP room protocol or Golfgame. The GUI uses the transport-neutral `mn_stream` layer for channel-tagged messages and handles partial reads/writes. A listening host can accept a replacement peer after disconnect and reset the framed session, while clients must scan/join again. It currently targets Windows desktop Bluetooth sockets; Linux builds expose linkable stubs so the rest of the library remains portable. Physical two-PC Bluetooth tests are still required before treating it as dependable.
+
+
+### Windows direct TCP test GUI
+
+Run `build\\Release\\multinet_tcp_demo.exe` on two PCs connected by a permitted IP network. On the host PC, choose a TCP port (default 27891) and click **Host**. On the second PC, enter the host's LAN IPv4 address and the same TCP port, then click **Connect**. Both sides can send channel-framed messages in the bottom field. The host listener stays open after a client leaves and accepts a replacement peer; the UI clears stale framed-message state when a replacement is accepted.
+
+This GUI tests the direct TCP byte-stream backend and shared `mn_stream` framing, not a 16-player room. TCP is unencrypted in this prototype, so use it only on a trusted network. Opening ports or changing firewall rules must follow the network owner's policy; the demo does not tunnel, proxy or bypass network controls.
 
 ### Terminal demo
 

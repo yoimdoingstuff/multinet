@@ -62,6 +62,12 @@ if(MULTINET_BUILD_DEMO)
         target_compile_definitions(multinet_rfcomm_demo PRIVATE _CRT_SECURE_NO_WARNINGS)
         install(TARGETS multinet_rfcomm_demo RUNTIME DESTINATION bin)
 
+        # Direct TCP test UI built on the same framed-stream API.
+        add_executable(multinet_tcp_demo WIN32 examples/multinet_tcp_demo_win32.c)
+        target_link_libraries(multinet_tcp_demo PRIVATE MultiNet::MultiNet user32 gdi32)
+        target_compile_definitions(multinet_tcp_demo PRIVATE _CRT_SECURE_NO_WARNINGS)
+        install(TARGETS multinet_tcp_demo RUNTIME DESTINATION bin)
+
         # Retain the command-line version for scripts and terminal testing.
         add_executable(multinet_cli_demo examples/multinet_demo.c)
         target_link_libraries(multinet_cli_demo PRIVATE MultiNet::MultiNet)

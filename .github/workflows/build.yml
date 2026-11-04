@@ -72,6 +72,14 @@ jobs:
             throw "The Bluetooth RFCOMM GUI demo exited immediately instead of staying open."
           }
           Stop-Process -Id $rfcommGui.Id -Force
+
+          $tcpGui = Start-Process -FilePath ".\build\Release\multinet_tcp_demo.exe" -PassThru
+          Start-Sleep -Seconds 2
+          $tcpGui.Refresh()
+          if ($tcpGui.HasExited) {
+            throw "The direct TCP GUI demo exited immediately instead of staying open."
+          }
+          Stop-Process -Id $tcpGui.Id -Force
       - name: Run loopback integration tests
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Install package

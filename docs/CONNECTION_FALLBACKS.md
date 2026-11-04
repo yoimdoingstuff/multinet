@@ -26,7 +26,7 @@ This is Bluetooth PAN networking over an OS-managed IP adapter. It is distinct f
 
 The normal `mn_instance` room API remains UDP-based. For applications that need a direct stream on networks where UDP is blocked but permitted TCP is available, the separate `mn_tcp_*` API can host or join one peer by IPv4 address/hostname and port. Use `mn_stream_transport_from_tcp()` to carry the same channel-framed messages as RFCOMM. A TCP host can accept a replacement peer after disconnect; reset the framed stream after the new connection is established.
 
-TCP is not automatically a fallback inside `mn_join()`, does not currently support the 16-player room protocol, and is not encrypted by itself. Both devices must be allowed to reach the chosen port under the network owner's rules. Configure any necessary firewall access through the network administrator; do not use proxies, covert tunnels or policy bypasses.
+TCP is not automatically a fallback inside `mn_join()`, does not currently support the 16-player room protocol, and is not encrypted by itself. The Windows `multinet_tcp_demo.exe` provides a simple host/connect chat test UI for two PCs. Both devices must be allowed to reach the chosen port under the network owner's rules. Configure any necessary firewall access through the network administrator; do not use proxies, covert tunnels or policy bypasses.
 
 ## Native Bluetooth RFCOMM (experimental)
 

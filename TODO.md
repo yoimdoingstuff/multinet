@@ -42,6 +42,7 @@
 - [ ] Test RFCOMM discovery, pairing, secure connection, disconnect and reconnect across two physical Windows PCs.
 - [ ] Add IPv6 transport.
 - [x] Add direct IPv4 TCP host/client streams with non-blocking connect, one-peer host listeners, replacement-client acceptance, framed-message adaptation and loopback coverage; the backend is not yet part of `mn_instance` room semantics.
+- [x] Add a double-clickable Windows TCP test GUI using framed application messages and a manual two-PC test workflow.
 - [x] Add a native Windows GUI demo with adapter selection, host/search/join/leave controls, live player list, messages, ping and status log; refresh adapter enumeration after Bluetooth PAN/Wi-Fi Direct links are connected.
 
 ## Integration and packaging
