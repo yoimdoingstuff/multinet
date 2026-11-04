@@ -21,6 +21,13 @@ MultiNet uses ordinary IP networking. It can use Ethernet, Wi-Fi, phone hotspots
 
 This is Bluetooth PAN networking over an OS-managed IP adapter. It is distinct from direct Bluetooth Low Energy advertising and RFCOMM. A separate experimental Windows-only RFCOMM stream API is now available through `mn_rfcomm_*`; the double-clickable `multinet_rfcomm_demo.exe` advertises and discovers a small one-peer service using Windows SDP and transfers text over a non-blocking stream. When secure mode is checked, Windows socket options require Bluetooth authentication and link encryption, with pairing/passkey UI handled by Windows. The RFCOMM test backend is not yet integrated into `mn_instance` or the 16-player game room. Applications can use the transport-neutral `mn_stream` layer for framed messages and partial-I/O handling, or use the low-level RFCOMM byte API directly. It is a Windows desktop feature, not BLE GATT, and it does not promise Apple AirDrop/Quick Share or Android RFCOMM interoperability. MultiNet does not silently pair devices or toggle radios. Bluetooth PAN and Wi-Fi Direct availability depends on OS version, drivers, device support and administrator policy. If they do not create usable links, use ordinary Wi-Fi/Ethernet or a supported hotspot.
 
+
+## Using direct TCP when UDP is unavailable
+
+The normal `mn_instance` room API remains UDP-based. For applications that need a direct stream on networks where UDP is blocked but permitted TCP is available, the separate `mn_tcp_*` API can host or join one peer by IPv4 address/hostname and port. Use `mn_stream_transport_from_tcp()` to carry the same channel-framed messages as RFCOMM. A TCP host can accept a replacement peer after disconnect; reset the framed stream after the new connection is established.
+
+TCP is not automatically a fallback inside `mn_join()`, does not currently support the 16-player room protocol, and is not encrypted by itself. Both devices must be allowed to reach the chosen port under the network owner's rules. Configure any necessary firewall access through the network administrator; do not use proxies, covert tunnels or policy bypasses.
+
 ## Native Bluetooth RFCOMM (experimental)
 
 RFCOMM is a Bluetooth Classic serial-style byte stream, not an IP adapter and not a UDP datagram socket. The optional `mn_rfcomm_*` API is deliberately separate from `mn_instance`: it currently supports one peer per endpoint and provides service advertising, nearby service discovery through Windows SDP, optional link authentication/encryption and non-blocking stream reads/writes. It does not yet carry MultiNet room packets or connect directly to Golfgame. The test GUI is `multinet_rfcomm_demo.exe` on Windows.

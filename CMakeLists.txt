@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(MultiNet VERSION 0.8.0 LANGUAGES C)
+project(MultiNet VERSION 0.9.0 LANGUAGES C)
 
 include(CTest)
 include(CMakePackageConfigHelpers)
@@ -10,7 +10,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 option(MULTINET_ENABLE_ENCRYPTION "Enable AES-256-GCM authenticated UDP transport" ON)
 
-add_library(multinet STATIC src/multinet.c src/multinet_crypto.c src/multinet_rfcomm.c src/multinet_stream.c)
+add_library(multinet STATIC src/multinet.c src/multinet_crypto.c src/multinet_rfcomm.c src/multinet_stream.c src/multinet_tcp.c)
 add_library(MultiNet::MultiNet ALIAS multinet)
 set_target_properties(multinet PROPERTIES EXPORT_NAME MultiNet)
 target_include_directories(multinet PUBLIC
@@ -129,6 +129,18 @@ if(BUILD_TESTING AND MULTINET_BUILD_TESTS)
         target_compile_options(multinet_stream_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME multinet_framed_stream COMMAND multinet_stream_tests)
+
+    add_executable(multinet_tcp_tests tests/test_tcp.c)
+    target_link_libraries(multinet_tcp_tests PRIVATE MultiNet::MultiNet)
+    if(NOT WIN32)
+        target_compile_definitions(multinet_tcp_tests PRIVATE _POSIX_C_SOURCE=200809L)
+    endif()
+    if(MSVC)
+        target_compile_options(multinet_tcp_tests PRIVATE /W4)
+    else()
+        target_compile_options(multinet_tcp_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME multinet_tcp_loopback COMMAND multinet_tcp_tests)
 endif()
 
 option(MULTINET_BUILD_FUZZERS "Build the optional Clang/libFuzzer packet target" OFF)
@@ -159,7 +171,7 @@ if(MULTINET_BUILD_FUZZERS)
 endif()
 
 install(TARGETS multinet EXPORT MultiNetTargets ARCHIVE DESTINATION lib)
-install(FILES include/multinet.h include/multinet_rfcomm.h include/multinet_stream.h DESTINATION include)
+install(FILES include/multinet.h include/multinet_rfcomm.h include/multinet_stream.h include/multinet_tcp.h DESTINATION include)
 install(EXPORT MultiNetTargets NAMESPACE MultiNet:: DESTINATION lib/cmake/MultiNet)
 
 configure_package_config_file(

@@ -41,7 +41,7 @@
 - [ ] Integrate stream transports into full MultiNet room/session semantics with multiple peers, identity, host approval, discovery and reconnection; the new framed API is currently a one-peer message channel, not a replacement for `mn_instance` or Golfgame.
 - [ ] Test RFCOMM discovery, pairing, secure connection, disconnect and reconnect across two physical Windows PCs.
 - [ ] Add IPv6 transport.
-- [ ] Add TCP as an optional direct-connect transport for networks where UDP is unavailable.
+- [x] Add direct IPv4 TCP host/client streams with non-blocking connect, one-peer host listeners, replacement-client acceptance, framed-message adaptation and loopback coverage; the backend is not yet part of `mn_instance` room semantics.
 - [x] Add a native Windows GUI demo with adapter selection, host/search/join/leave controls, live player list, messages, ping and status log; refresh adapter enumeration after Bluetooth PAN/Wi-Fi Direct links are connected.
 
 ## Integration and packaging

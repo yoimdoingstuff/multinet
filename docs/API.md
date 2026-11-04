@@ -126,6 +126,17 @@ The wire format starts with a 12-byte fixed-endian header: the four-byte MNS1 ma
 
 The helper `mn_stream_transport_from_rfcomm()` adapts the experimental RFCOMM API to this interface. It is available on Windows when the RFCOMM backend is compiled; unsupported platforms return zero. The Windows Bluetooth GUI demo now sends channel-1 messages through this framed layer. The stream API does not yet provide multi-peer rooms, host approval, delivery acknowledgements or public-internet matchmaking.
 
+
+## Direct TCP stream transport
+
+Include `multinet_tcp.h` for direct IPv4 TCP connections on Windows and POSIX systems. This is a one-peer byte-stream API, separate from `mn_instance` and its 16-player UDP rooms.
+
+Create an endpoint with `mn_tcp_create()`. A host calls `mn_tcp_host(connection, local_ipv4, port)`; pass `NULL` to bind all local IPv4 adapters and port zero to let the OS choose an ephemeral port, then read `mn_tcp_info.local_port`. A client calls `mn_tcp_join(connection, host, port)` with an IPv4 address or resolvable hostname and a non-zero port. Connect progress is non-blocking; call `mn_tcp_update()` until `mn_tcp_info.state` is `MN_TCP_CONNECTED`. The host accepts one client at a time and keeps its listening socket open after that client disconnects.
+
+Use `mn_stream_transport_from_tcp()` to adapt the connection to the transport-neutral `mn_stream` layer. Create an `mn_stream`, exchange channel-tagged framed messages, and call `mn_stream_update()` regularly. When the peer disconnects, the framed stream reports a failure; the host can accept a replacement client, then call `mn_stream_reset()` after the new connection is established to discard stale parser/queue state. Clients create a new TCP connection and reset their framed stream after reconnecting.
+
+This TCP backend is an ordinary direct connection over a user-permitted IP route and port. It does not tunnel, proxy, relay, or bypass firewall policy. TCP here is not encrypted by itself; use it on trusted networks or add an application-level authenticated encryption layer. The transport is currently IPv4-only, single-peer, and not integrated into `mn_instance` room discovery, host approval, 16-player roster replication or Golfgame. The `multinet_tcp_tests` target exercises loopback messaging, disconnect detection and replacement-client acceptance.
+
 ## Optional Bluetooth RFCOMM stream API
 
 Include multinet_rfcomm.h for the experimental Windows Bluetooth Classic stream backend. It is separate from mn_instance, which remains the IPv4 UDP room/session API.
