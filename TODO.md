@@ -26,6 +26,7 @@
 ## Transport and discovery
 
 - [x] Add directed/unicast room discovery as a fallback when LAN broadcast is filtered.
+- [x] Add interface-bound directed/unicast discovery for Bluetooth PAN, Wi-Fi Direct and multi-adapter PCs.
 
 - [x] Add DNS-SD/mDNS service discovery as another LAN room-discovery fallback.
 - [x] Add one automatic discovery mode that runs global broadcast, subnet-directed broadcast and mDNS together.

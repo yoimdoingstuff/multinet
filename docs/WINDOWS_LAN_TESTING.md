@@ -26,6 +26,7 @@ Run each case separately and record whether it succeeds:
 
 - [ ] Automatic discovery with broadcast and mDNS available.
 - [ ] Broadcast disabled on the client; direct unicast discovery to the host address and port.
+- [ ] Direct unicast discovery bound to the chosen local adapter using `mn_discover_at_from()`.
 - [ ] Manual direct join by host IPv4 address without performing discovery.
 - [ ] Host and client bound to explicit Ethernet addresses.
 - [ ] Host and client bound to explicit Wi-Fi addresses.

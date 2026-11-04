@@ -81,21 +81,25 @@ The GUI timer keeps the network update loop running while the window is open. Ke
 
 ### Terminal demo
 
-Open two terminals on one PC. Start the host:
+Run the host and client in separate terminals when testing the CLI build:
 
-```sh
-./build/multinet_cli_demo host Alice "Test Room"
+**Windows PowerShell**
+
+```powershell
+.\build\multinet_cli_demo.exe host Alice "Test Room"
+.\build\multinet_cli_demo.exe join 127.0.0.1 Bob
 ```
 
-Join from the second terminal:
+**Linux**
 
 ```sh
-./build/multinet_cli_demo join 127.0.0.1 Bob
+./build/multinet_demo host Alice "Test Room"
+./build/multinet_demo join 127.0.0.1 Bob
 ```
 
-For another PC on the same permitted LAN, replace `127.0.0.1` with the host PC's local IPv4 address. The default UDP port is `27890`; the host firewall may need to allow it. The demo does not tunnel traffic or bypass network restrictions.
+For another PC on the same permitted LAN, replace `127.0.0.1` with the host PC's local IPv4 address. The default UDP port is `27890`; the host firewall may need to allow it. The CLI demo does not tunnel traffic or bypass network restrictions.
 
-Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. Use `./build/multinet_cli_demo interfaces` on Windows or `./build/multinet_demo interfaces` on Linux to list local IPv4 adapters. Use `./build/multinet_demo scan-mdns` to discover rooms through DNS-SD/mDNS when the local network supports multicast. `./build/multinet_demo host-on 192.168.1.20 Alice` and `./build/multinet_demo join-from 192.168.1.30 192.168.1.20 Bob` bind each side to a chosen interface; `./build/multinet_demo scan-on 192.168.1.30` scans through that adapter. Discover nearby rooms with `./build/multinet_demo scan`, which automatically tries global LAN broadcast, per-interface subnet broadcast and mDNS/DNS-SD. When broadcast discovery is filtered, probe a known host directly with `./build/multinet_demo scan 27890 192.168.1.10`, or skip discovery and join directly with `./build/multinet_demo join 192.168.1.10 Bob`. Host, join and scan accept custom UDP ports.
+Controls: **W/A/S/D** move the demo player, **M** starts the match on the host, **B** broadcasts a sample message, and **Q** exits. On Windows use `multinet_cli_demo.exe interfaces`; on Linux use `./build/multinet_demo interfaces`. The other terminal commands are `scan`, `scan-mdns`, `host-on`, `join-from` and `scan-on`. For an adapter-bound unicast probe, fill in the GUI's Host IP box and choose an adapter, or use `mn_discover_at_from()` from the C API. When broadcast discovery is filtered, scan a known host IP directly or skip discovery and join it. Host, join and scan accept custom UDP ports.
 
 The loopback integration test exercises independent instances, player replication, host-side position/velocity bounds and application validation callbacks, best-effort and acknowledged messages in both directions, delivery IDs and per-player ACKs for a 15-recipient broadcast, pending-delivery failure on departure, ping, match start, the full 16-player limit and player departure. This is not a substitute for testing two physical Windows PCs over a real LAN.
 
