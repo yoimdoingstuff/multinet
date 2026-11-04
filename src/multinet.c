@@ -508,10 +508,11 @@ size_t mn_get_interfaces(mn_interface *interfaces, size_t capacity) {
                 }
                 display_name[0] = '\0';
                 if (adapter->FriendlyName)
-                    WideCharToMultiByte(CP_UTF8, 0, adapter->FriendlyName, -1,
-                                        display_name, (int)sizeof(display_name), NULL, NULL);
-                else
-                    display_name[0] = '\0';
+                    (void)WideCharToMultiByte(CP_UTF8, 0, adapter->FriendlyName, -1,
+                                              display_name, (int)sizeof(display_name), NULL, NULL);
+                if (!display_name[0] && adapter->Description)
+                    (void)WideCharToMultiByte(CP_UTF8, 0, adapter->Description, -1,
+                                              display_name, (int)sizeof(display_name), NULL, NULL);
                 mn_copy_text(item.name, sizeof(item.name),
                              adapter->AdapterName ? adapter->AdapterName : "adapter");
                 mn_copy_text(item.description, sizeof(item.description),
@@ -571,7 +572,8 @@ size_t mn_get_interfaces(mn_interface *interfaces, size_t capacity) {
                 item.type = MN_INTERFACE_LOOPBACK;
             else if (mn_text_contains_ci(entry->ifa_name, "bnep") ||
                      mn_text_contains_ci(entry->ifa_name, "bluetooth") ||
-                     mn_text_contains_ci(entry->ifa_name, "bt-pan"))
+                     mn_text_contains_ci(entry->ifa_name, "bt-pan") ||
+                     strncmp(entry->ifa_name, "pan", 3) == 0)
                 item.type = MN_INTERFACE_BLUETOOTH_PAN;
             else if (mn_text_contains_ci(entry->ifa_name, "p2p") ||
                      mn_text_contains_ci(entry->ifa_name, "wfd"))
