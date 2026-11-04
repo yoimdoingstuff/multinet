@@ -53,6 +53,8 @@ AES-GCM uses a 64-bit random per-instance nonce prefix plus a monotonically incr
 - `mn_discover()` starts a broadcast-only scan. `mn_discover_auto()` is the recommended default: it sends global broadcast, directed subnet-broadcast probes on each usable OS IPv4 interface, and mDNS/DNS-SD queries on each active non-loopback adapter concurrently, then retries them during the discovery window. Hosts advertise all active IPv4 addresses in mDNS responses; clients prefer the address on their local subnet. Call `mn_update()` while it runs, then query `mn_get_rooms()`.
 - `mn_discover_at(instance, address, port)` sends a unicast discovery probe to one known host and retries it during the discovery window. Use it when broadcast is disabled, blocked by a router, or suppressed by the local network.
 - `mn_discover_at_from(instance, local_ipv4, address, port)` does the same while binding the probe socket to the selected local IPv4 adapter. Use it when the host address is known but you need to force traffic over Bluetooth PAN, Wi-Fi Direct, Ethernet or a particular Wi-Fi adapter.
+
+The Windows GUI provides a **Refresh adapters** control for links connected after launch, a direct-IP scan using the optional Host IP field, and a **Ping** control for measuring client-to-host or host-to-selected-player latency.
 - `mn_discover_mdns()` uses DNS-SD/mDNS on UDP 5353 to discover `_multinet._udp.local` services. Check `mn_info.mdns_available` first; the mDNS socket is optional and does not prevent the other discovery methods from working.
 - `mn_join(instance, host, port, player_name)` joins by IPv4 address or hostname. A port of zero uses the configured port.
 - `mn_join_room()` is a convenience wrapper around a discovered `mn_room`.

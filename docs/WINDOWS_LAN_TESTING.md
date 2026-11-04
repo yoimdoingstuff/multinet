@@ -34,6 +34,8 @@ Run each case separately and record whether it succeeds:
 - [ ] With multiple adapters connected, confirm the GUI adapter dropdown and `join-from` select the intended source adapter.
 - [ ] With Ethernet and Wi-Fi active together, verify mDNS returns the address on the client's matching subnet.
 - [ ] If available and permitted, repeat discovery/join across Bluetooth PAN and Wi-Fi Direct using the GUI adapter selector.
+- [ ] Connect Bluetooth PAN after opening the GUI, press Refresh adapters, and confirm the adapter appears in the list.
+- [ ] Join a room and use Ping to confirm a latency reading appears in the status line.
 - [ ] Repeat with a non-default UDP port and verify both endpoints use the same configured port.
 
 Do not simulate a blocked network by disabling security controls on a managed device. Use a test network or an administrator-approved firewall rule.

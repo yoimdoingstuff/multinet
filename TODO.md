@@ -37,7 +37,7 @@
 - [ ] Add native Bluetooth RFCOMM support as an optional transport backend (Bluetooth PAN over OS-managed IP is available today; RFCOMM needs a separate stream transport backend).
 - [ ] Add IPv6 transport.
 - [ ] Add TCP as an optional direct-connect transport for networks where UDP is unavailable.
-- [x] Add a native Windows GUI demo with adapter selection, host/search/join/leave controls, live player list, messages and status log.
+- [x] Add a native Windows GUI demo with adapter selection, host/search/join/leave controls, live player list, messages, ping and status log; refresh adapter enumeration after Bluetooth PAN/Wi-Fi Direct links are connected.
 
 ## Integration and packaging
 

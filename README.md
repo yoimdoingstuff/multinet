@@ -75,7 +75,7 @@ Each process moves its own point and prints all replicated player positions once
 
 ### Windows graphical demo
 
-Run `multinet_demo.exe` from the build or install `bin` directory. The window lets you host a room, search for rooms, join a selected room or manual IP address, choose a local network adapter, view players/events, send a test message, start a match and leave. Select an active Bluetooth PAN or Wi-Fi Direct adapter to bind the room or client to that OS-managed IP link. Pair/connect devices in Windows first; MultiNet does not silently enable radios or create a PAN group.
+Run `multinet_demo.exe` from the build or install `bin` directory. The window lets you host a room, search for rooms, join a selected room or manual IP address, choose or refresh the local network adapter list, view players/events, send a test message, measure latency with Ping, start a match and leave. Select an active Bluetooth PAN or Wi-Fi Direct adapter to bind the room or client to that OS-managed IP link. Pair/connect devices in Windows first; MultiNet does not silently enable radios or create a PAN group.
 
 The GUI timer keeps the network update loop running while the window is open. Keep the app open during play. The small chat and 2D object examples remain command-line samples; on Windows they display a help dialog when launched without arguments.
 
