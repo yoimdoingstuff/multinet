@@ -154,15 +154,28 @@ static void refresh_rooms(void) {
 static void refresh_players(void) {
     mn_player players[MN_MAX_PLAYERS];
     size_t count, i;
+    uint32_t selected_player_id = 0;
+    LRESULT previous_selection;
     char line[128];
-    SendMessageA(g_players_list, LB_RESETCONTENT, 0, 0);
+    previous_selection = SendMessageA(g_players_list, LB_GETCURSEL, 0, 0);
+    if (previous_selection != LB_ERR) {
+        LRESULT previous_id = SendMessageA(g_players_list, LB_GETITEMDATA,
+                                           (WPARAM)previous_selection, 0);
+        if (previous_id > 0) selected_player_id = (uint32_t)previous_id;
+    }
     count = mn_get_players(g_network, players, MN_MAX_PLAYERS);
     if (count > MN_MAX_PLAYERS) count = MN_MAX_PLAYERS;
+    SendMessageA(g_players_list, LB_RESETCONTENT, 0, 0);
     for (i = 0; i < count; ++i) {
+        LRESULT item;
         (void)snprintf(line, sizeof(line), "#%u  %s  score %d",
                        (unsigned)players[i].id, players[i].name,
                        (int)players[i].score);
-        SendMessageA(g_players_list, LB_ADDSTRING, 0, (LPARAM)line);
+        item = SendMessageA(g_players_list, LB_ADDSTRING, 0, (LPARAM)line);
+        SendMessageA(g_players_list, LB_SETITEMDATA, (WPARAM)item,
+                     (LPARAM)players[i].id);
+        if (selected_player_id != 0 && players[i].id == selected_player_id)
+            SendMessageA(g_players_list, LB_SETCURSEL, (WPARAM)item, 0);
     }
 }
 
