@@ -124,6 +124,26 @@ void mn_stream_destroy(mn_stream *stream) {
     free(stream);
 }
 
+void mn_stream_reset(mn_stream *stream) {
+    if (!stream) return;
+    mn_stream_release_queues(stream);
+    stream->tx_head = 0;
+    stream->tx_count = 0;
+    stream->tx_bytes = 0;
+    memset(stream->rx_header, 0, sizeof(stream->rx_header));
+    stream->rx_header_used = 0;
+    stream->rx_channel = 0;
+    stream->rx_expected = 0;
+    stream->rx_payload_used = 0;
+    stream->message_head = 0;
+    stream->message_count = 0;
+    stream->message_bytes = 0;
+    stream->failed = 0;
+    stream->was_connected =
+        stream->transport.is_connected(stream->transport.context) ? 1 : 0;
+    stream->last_error[0] = '\0';
+}
+
 int mn_stream_send(mn_stream *stream, uint16_t channel,
                    const void *data, size_t size) {
     size_t frame_size;

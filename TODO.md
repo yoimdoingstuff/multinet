@@ -37,6 +37,7 @@
 - [x] Add an experimental Windows RFCOMM one-peer stream API with SDP service registration/discovery, optional OS authentication + link encryption and a double-clickable test GUI.
 - [x] Add a transport-neutral framed-message API with application channels, fixed-endian message headers, bounded queues and correct partial read/write handling.
 - [x] Add an RFCOMM-to-stream adapter and update the Bluetooth GUI to use the framed-message layer.
+- [x] Add stream reset/reconnect lifecycle support that drops stale partial frames and queued data; the Windows RFCOMM host demo can accept a replacement peer after disconnect.
 - [ ] Integrate stream transports into full MultiNet room/session semantics with multiple peers, identity, host approval, discovery and reconnection; the new framed API is currently a one-peer message channel, not a replacement for `mn_instance` or Golfgame.
 - [ ] Test RFCOMM discovery, pairing, secure connection, disconnect and reconnect across two physical Windows PCs.
 - [ ] Add IPv6 transport.

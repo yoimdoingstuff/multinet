@@ -38,6 +38,11 @@ mn_stream *mn_stream_create(const mn_stream_transport *transport,
                             uint32_t max_message_bytes);
 void mn_stream_destroy(mn_stream *stream);
 
+/* Drop queued/partial messages and clear a latched stream error after the
+   underlying transport has been deliberately reconnected. This does not
+   reconnect or close the transport itself. */ 
+void mn_stream_reset(mn_stream *stream);
+
 /* Queue one message. The queue is bounded; call mn_stream_update() to make
    progress and retry when this returns zero because the queue is full. */
 int mn_stream_send(mn_stream *stream, uint16_t channel,

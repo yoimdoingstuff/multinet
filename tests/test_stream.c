@@ -23,6 +23,7 @@ typedef struct test_endpoint {
     int side;
     size_t max_read;
     size_t max_write;
+    int connected;
 } test_endpoint;
 
 static int failures;
@@ -71,7 +72,8 @@ static int fake_update(void *context) {
 }
 
 static int fake_connected(void *context) {
-    return context != NULL;
+    test_endpoint *endpoint = (test_endpoint *)context;
+    return endpoint != NULL && endpoint->connected;
 }
 
 static int fake_read(void *context, void *buffer, size_t capacity,
@@ -140,10 +142,12 @@ int main(void) {
     endpoint_a.side = 0;
     endpoint_a.max_read = 2u;
     endpoint_a.max_write = 3u;
+    endpoint_a.connected = 1;
     endpoint_b.wire = &wire;
     endpoint_b.side = 1;
     endpoint_b.max_read = 2u;
     endpoint_b.max_write = 3u;
+    endpoint_b.connected = 1;
     transport_a = make_transport(&endpoint_a);
     transport_b = make_transport(&endpoint_b);
     stream_a = mn_stream_create(&transport_a, 128u);
@@ -201,6 +205,23 @@ int main(void) {
         CHECK(poll_result == 1 && received_size == 0u,
               "poll one message from the bounded receive queue");
     }
+
+    endpoint_b.connected = 0;
+    CHECK(!mn_stream_update(stream_b),
+          "latch a dropped underlying byte-stream connection");
+    endpoint_b.connected = 1;
+    mn_stream_reset(stream_b);
+    CHECK(mn_stream_update(stream_b),
+          "reset the framed stream after the transport reconnects");
+    CHECK(mn_stream_send(stream_a, 10u, "fresh-session", 13u),
+          "queue a message for the replacement session");
+    pump_pair(stream_a, stream_b, 40u);
+    poll_result = mn_stream_poll(stream_b, &channel, received,
+                                 sizeof(received), &received_size);
+    CHECK(poll_result == 1 && channel == 10u &&
+          received_size == 13u &&
+          memcmp(received, "fresh-session", 13u) == 0,
+          "deliver fresh-session data after reconnect without stale frames");
 
     mn_stream_destroy(stream_b);
     stream_b = NULL;

@@ -41,6 +41,7 @@ static HWND g_status;
 static mn_rfcomm *g_connection;
 static mn_stream *g_stream;
 static int g_stream_error_logged;
+static int g_host_waiting_reconnect;
 static mn_rfcomm_device g_devices[MN_RFCOMM_MAX_DEVICES];
 static size_t g_device_count;
 static char g_scan_error[160];
@@ -93,6 +94,7 @@ static int reset_framed_stream(void) {
         return 0;
     g_stream = mn_stream_create(&transport, 4096u);
     g_stream_error_logged = 0;
+    g_host_waiting_reconnect = 0;
     return g_stream != NULL;
 }
 
@@ -164,7 +166,9 @@ static void do_host(void) {
         update_status();
         return;
     }
-    mn_rfcomm_get_info(g_connection, &info);
+    mn_stream_reset(g_stream);
+    g_stream_error_logged = 0;
+    g_host_waiting_reconnect = 0;
     add_log("Service is discoverable by another MultiNet RFCOMM demo.");
     add_log("On the other PC, scan for services and connect to this device.");
     add_log("Windows may display its own Bluetooth pairing/passkey prompt.");
@@ -253,6 +257,9 @@ static void do_join(void) {
         update_status();
         return;
     }
+    mn_stream_reset(g_stream);
+    g_stream_error_logged = 0;
+    g_host_waiting_reconnect = 0;
     add_log("Connection started. Keep this window open while Windows connects.");
     update_status();
 }
@@ -403,9 +410,29 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
         }
         case WM_TIMER:
             if (g_connection) {
-                if (!mn_stream_update(g_stream) && !g_stream_error_logged) {
-                    add_log(mn_stream_last_error(g_stream));
-                    g_stream_error_logged = 1;
+                if (!mn_stream_update(g_stream)) {
+                    mn_rfcomm_info transport_info;
+                    if (!g_stream_error_logged) {
+                        add_log(mn_stream_last_error(g_stream));
+                        g_stream_error_logged = 1;
+                    }
+                    /* A failed framed stream no longer pumps the transport.
+                       Keep a listening RFCOMM host alive so a new peer can be
+                       accepted, then discard old framed state on reconnect. */
+                    /* Check the state immediately after the stream noticed
+                       EOF, before accept() can replace the old peer. */
+                    mn_rfcomm_get_info(g_connection, &transport_info);
+                    if (transport_info.state == MN_RFCOMM_LISTENING)
+                        g_host_waiting_reconnect = 1;
+                    (void)mn_rfcomm_update(g_connection);
+                    mn_rfcomm_get_info(g_connection, &transport_info);
+                    if (g_host_waiting_reconnect &&
+                        transport_info.state == MN_RFCOMM_CONNECTED) {
+                        mn_stream_reset(g_stream);
+                        g_stream_error_logged = 0;
+                        g_host_waiting_reconnect = 0;
+                        add_log("A Bluetooth peer reconnected. Old queued messages were discarded.");
+                    }
                 }
                 poll_incoming();
                 update_status();
