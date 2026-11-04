@@ -30,6 +30,8 @@ static HINSTANCE g_instance_handle;
 static HWND g_window;
 static HWND g_name, g_room, g_port, g_interface, g_host;
 static HWND g_rooms_list, g_players_list, g_log, g_status;
+static HWND g_label_name, g_label_room, g_label_port, g_label_adapter, g_label_host;
+static HWND g_label_message, g_label_rooms, g_label_players;
 static mn_instance *g_network;
 static mn_interface g_interfaces[64];
 static size_t g_interface_count;
@@ -336,29 +338,31 @@ static void do_send(void) {
 }
 
 static void create_controls(HWND window) {
-    make_control("STATIC", "Player", 0, -1, window);
+    g_label_name = make_control("STATIC", "Player", 0, -1, window);
     g_name = make_control("EDIT", "Player", WS_BORDER | ES_AUTOHSCROLL, ID_NAME, window);
-    make_control("STATIC", "Room", 0, -1, window);
+    g_label_room = make_control("STATIC", "Room", 0, -1, window);
     g_room = make_control("EDIT", "MultiNet Room", WS_BORDER | ES_AUTOHSCROLL, ID_ROOM, window);
-    make_control("STATIC", "Port", 0, -1, window);
+    g_label_port = make_control("STATIC", "Port", 0, -1, window);
     g_port = make_control("EDIT", "27890", WS_BORDER | ES_AUTOHSCROLL, ID_PORT, window);
-    make_control("STATIC", "Network adapter", 0, -1, window);
+    g_label_adapter = make_control("STATIC", "Network adapter", 0, -1, window);
     g_interface = make_control("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
                                ID_INTERFACE, window);
-    make_control("STATIC", "Host IP", 0, -1, window);
+    g_label_host = make_control("STATIC", "Host IP", 0, -1, window);
     g_host = make_control("EDIT", "127.0.0.1", WS_BORDER | ES_AUTOHSCROLL, ID_HOST, window);
     make_control("BUTTON", "Host room", WS_TABSTOP, ID_HOST_BTN, window);
     make_control("BUTTON", "Find rooms", WS_TABSTOP, ID_SCAN_BTN, window);
     make_control("BUTTON", "Join selected / IP", WS_TABSTOP, ID_JOIN_BTN, window);
     make_control("BUTTON", "Leave", WS_TABSTOP, ID_LEAVE_BTN, window);
     make_control("BUTTON", "Start match", WS_TABSTOP, ID_START_BTN, window);
+    g_label_rooms = make_control("STATIC", "Discovered rooms", 0, -1, window);
+    g_label_players = make_control("STATIC", "Players in session", 0, -1, window);
     g_rooms_list = make_control("LISTBOX", "", WS_BORDER | LBS_NOTIFY | WS_VSCROLL,
                                 ID_ROOMS, window);
     g_players_list = make_control("LISTBOX", "", WS_BORDER | WS_VSCROLL,
                                   ID_PLAYERS, window);
     g_log = make_control("EDIT", "", WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL |
                          ES_READONLY | WS_VSCROLL, ID_LOG, window);
-    make_control("STATIC", "Message", 0, -1, window);
+    g_label_message = make_control("STATIC", "Message", 0, -1, window);
     make_control("EDIT", "Hello from MultiNet!", WS_BORDER | ES_AUTOHSCROLL,
                  ID_SEND_TEXT, window);
     make_control("BUTTON", "Send", WS_TABSTOP, ID_SEND_BTN, window);
@@ -382,14 +386,15 @@ static void layout_controls(HWND window) {
     height = rect.bottom - rect.top;
     room_width = width * 42 / 100;
     player_width = width * 24 / 100;
-    SetWindowPos(GetDlgItem(window, -1), NULL, 8, 14, 45, 22, SWP_NOZORDER);
+    SetWindowPos(g_label_name, NULL, 8, 14, 45, 22, SWP_NOZORDER);
     SetWindowPos(g_name, NULL, 53, 10, 130, 25, SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(window, -1), NULL, 190, 14, 50, 22, SWP_NOZORDER);
+    SetWindowPos(g_label_room, NULL, 190, 14, 45, 22, SWP_NOZORDER);
     SetWindowPos(g_room, NULL, 238, 10, 170, 25, SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(window, -1), NULL, 416, 14, 35, 22, SWP_NOZORDER);
+    SetWindowPos(g_label_port, NULL, 416, 14, 35, 22, SWP_NOZORDER);
     SetWindowPos(g_port, NULL, 452, 10, 62, 25, SWP_NOZORDER);
-    SetWindowPos(g_interface, NULL, 525, 10, width - 535, 180, SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(window, -1), NULL, 8, 51, 52, 22, SWP_NOZORDER);
+    SetWindowPos(g_label_adapter, NULL, 525, 14, 95, 22, SWP_NOZORDER);
+    SetWindowPos(g_interface, NULL, 620, 10, width - 630, 180, SWP_NOZORDER);
+    SetWindowPos(g_label_host, NULL, 8, 51, 52, 22, SWP_NOZORDER);
     SetWindowPos(g_host, NULL, 61, 47, 145, 25, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window, ID_HOST_BTN), NULL, 216, 47, 90, 27, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window, ID_SCAN_BTN), NULL, 312, 47, 95, 27, SWP_NOZORDER);
@@ -397,14 +402,16 @@ static void layout_controls(HWND window) {
     SetWindowPos(GetDlgItem(window, ID_LEAVE_BTN), NULL, 554, 47, 75, 27, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window, ID_START_BTN), NULL, 635, 47, 100, 27, SWP_NOZORDER);
     log_top = height - 190;
-    SetWindowPos(g_rooms_list, NULL, 8, 88, room_width - 12, log_top - 96,
+    SetWindowPos(g_label_rooms, NULL, 8, 80, room_width - 12, 18, SWP_NOZORDER);
+    SetWindowPos(g_label_players, NULL, room_width, 80, player_width - 8, 18, SWP_NOZORDER);
+    SetWindowPos(g_rooms_list, NULL, 8, 100, room_width - 12, log_top - 108,
                  SWP_NOZORDER);
-    SetWindowPos(g_players_list, NULL, room_width, 88, player_width - 8, log_top - 96,
+    SetWindowPos(g_players_list, NULL, room_width, 100, player_width - 8, log_top - 108,
                  SWP_NOZORDER);
-    SetWindowPos(g_log, NULL, room_width + player_width, 88,
-                 width - room_width - player_width - 8, log_top - 96,
+    SetWindowPos(g_log, NULL, room_width + player_width, 100,
+                 width - room_width - player_width - 8, log_top - 108,
                  SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(window, -1), NULL, 8, log_top + 8, 55, 22, SWP_NOZORDER);
+    SetWindowPos(g_label_message, NULL, 8, log_top + 8, 55, 22, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window, ID_SEND_TEXT), NULL, 65, log_top + 4,
                  width - 132, 25, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window, ID_SEND_BTN), NULL, width - 60, log_top + 3,
@@ -426,6 +433,12 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
         case WM_SIZE:
             layout_controls(window);
             return 0;
+        case WM_GETMINMAXINFO: {
+            MINMAXINFO *limits = (MINMAXINFO *)lparam;
+            limits->ptMinTrackSize.x = 780;
+            limits->ptMinTrackSize.y = 560;
+            return 0;
+        }
         case WM_TIMER:
             if (g_network) {
                 mn_update(g_network, 0.033f);
