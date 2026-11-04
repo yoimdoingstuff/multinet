@@ -342,7 +342,16 @@ int main(int argc, char **argv) {
     mn_config config;
     if (argc < 2 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0) {
         print_usage(argv[0]);
-        return argc < 2 ? 0 : 0;
+#ifdef _WIN32
+        if (argc < 2) {
+            MessageBoxA(NULL,
+                "This is the terminal-only MultiNet demo.\n\n"
+                "Open multinet_demo.exe for the graphical demo, or run "
+                "multinet_cli_demo.exe from PowerShell with command-line arguments.",
+                "MultiNet command-line demo", MB_OK | MB_ICONINFORMATION);
+        }
+#endif
+        return 0;
     }
     mn_config_init(&config);
     if (strcmp(argv[1], "scan") == 0) {

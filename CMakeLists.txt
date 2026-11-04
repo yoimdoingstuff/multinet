@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(MultiNet VERSION 0.5.0 LANGUAGES C)
+project(MultiNet VERSION 0.6.0 LANGUAGES C)
 
 include(CTest)
 include(CMakePackageConfigHelpers)
@@ -51,7 +51,8 @@ if(MULTINET_BUILD_DEMO)
     if(WIN32)
         # A double-clickable native GUI demo is the default Windows executable.
         add_executable(multinet_demo WIN32 examples/multinet_gui_demo_win32.c)
-        target_link_libraries(multinet_demo PRIVATE MultiNet::MultiNet)
+        target_link_libraries(multinet_demo PRIVATE MultiNet::MultiNet user32 gdi32)
+        target_compile_definitions(multinet_demo PRIVATE _CRT_SECURE_NO_WARNINGS)
         install(TARGETS multinet_demo RUNTIME DESTINATION bin)
 
         # Retain the command-line version for scripts and terminal testing.

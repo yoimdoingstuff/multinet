@@ -213,6 +213,9 @@ int main(void) {
           "configure host-side bounds and an application state validator");
     interface_count = mn_get_interfaces(interfaces, 64);
     CHECK(interface_count > 0, "enumerate local IPv4 network interfaces");
+    CHECK(mn_get_interfaces(NULL, 0) == interface_count &&
+          mn_get_interfaces(interfaces, 1) == interface_count,
+          "interface enumeration reports total count independently of output capacity");
     for (interface_index = 0; interface_index < interface_count && interface_index < 64;
          ++interface_index) {
         if (interfaces[interface_index].type == MN_INTERFACE_LOOPBACK &&

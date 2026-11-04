@@ -88,6 +88,14 @@ int main(int argc, char **argv) {
             "  %s host <name> <message> [port]\n"
             "  %s join <host-ip> <name> <message> [port]\n",
             argv[0], argv[0]);
+#ifdef _WIN32
+        if (argc == 1) {
+            MessageBoxA(NULL,
+                "This is a command-line chat example. Run it from PowerShell with "
+                "'host' or 'join' arguments. Open multinet_demo.exe for the graphical multiplayer demo.",
+                "MultiNet chat example", MB_OK | MB_ICONINFORMATION);
+        }
+#endif
         return 2;
     }
     mode = argv[1];

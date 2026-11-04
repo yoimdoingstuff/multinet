@@ -40,6 +40,14 @@ int main(int argc, char **argv) {
             "  %s host <name>\n"
             "  %s join <host-ip> <name>\n",
             argv[0], argv[0]);
+#ifdef _WIN32
+        if (argc == 1) {
+            MessageBoxA(NULL,
+                "This is a command-line 2D object example. Run it from PowerShell with "
+                "'host' or 'join' arguments. Open multinet_demo.exe for the graphical multiplayer demo.",
+                "MultiNet 2D object example", MB_OK | MB_ICONINFORMATION);
+        }
+#endif
         return 2;
     }
     is_host = strcmp(argv[1], "host") == 0;
