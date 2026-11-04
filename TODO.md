@@ -34,7 +34,9 @@
 - [ ] Add discovery tests across physically isolated Ethernet/Wi-Fi/Bluetooth PAN interfaces where CI permits; loopback CI cannot prove hardware routing.
 - [x] Add basic client-to-host and host-to-client ping/latency measurement.
 - [x] Enumerate OS IPv4 adapters and support explicit binding for Ethernet, Wi-Fi, Wi-Fi Direct and Bluetooth PAN IP interfaces.
-- [ ] Add native Bluetooth RFCOMM support as an optional transport backend (Bluetooth PAN over OS-managed IP is available today; RFCOMM needs a separate stream transport backend).
+- [x] Add an experimental Windows RFCOMM one-peer stream API with SDP service registration/discovery, optional OS authentication + link encryption and a double-clickable test GUI.
+- [ ] Integrate RFCOMM sessions into a transport-independent MultiNet room API with stream framing, multiple peers and reconnection; the current prototype is not used by `mn_instance` or Golfgame.
+- [ ] Test RFCOMM discovery, pairing, secure connection, disconnect and reconnect across two physical Windows PCs.
 - [ ] Add IPv6 transport.
 - [ ] Add TCP as an optional direct-connect transport for networks where UDP is unavailable.
 - [x] Add a native Windows GUI demo with adapter selection, host/search/join/leave controls, live player list, messages, ping and status log; refresh adapter enumeration after Bluetooth PAN/Wi-Fi Direct links are connected.

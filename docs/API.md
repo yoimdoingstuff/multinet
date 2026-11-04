@@ -114,3 +114,16 @@ Use [`docs/WINDOWS_LAN_TESTING.md`](WINDOWS_LAN_TESTING.md) for a step-by-step t
 ## Error handling
 
 Creation failure returns `NULL`. Most lifecycle methods return non-zero on success. `mn_get_info()` copies the most recent human-readable error to `last_error`; `MN_EVENT_ERROR` is also queued. Network send functions use UDP and cannot promise remote delivery merely because the local send call was accepted.
+
+
+## Optional Bluetooth RFCOMM stream API
+
+Include multinet_rfcomm.h for the experimental Windows Bluetooth Classic stream backend. It is separate from mn_instance, which remains the IPv4 UDP room/session API.
+
+Create an mn_rfcomm object with mn_rfcomm_create(). On the host, call mn_rfcomm_host(connection, service_name, secure_link); Windows binds an automatically assigned RFCOMM channel and advertises the service through SDP. On the client, call mn_rfcomm_discover(connection, devices, capacity), select a returned mn_rfcomm_device, and pass it to mn_rfcomm_join(). Discovery performs a device inquiry and a service query, so it may take several seconds.
+
+Call mn_rfcomm_update() regularly. The host accepts one peer; the client transitions from connecting to connected. Once connected, mn_rfcomm_read() and mn_rfcomm_write() perform non-blocking byte-stream I/O. These functions report the number of bytes transferred, which may be smaller than requested; zero transferred bytes means the operation would block. The application must frame its own messages because RFCOMM does not preserve write boundaries. A return value of zero indicates a disconnect/error; a successful call with zero transferred bytes means the non-blocking socket would block. mn_rfcomm_close() ends the service/connection, and mn_rfcomm_destroy() releases the object.
+
+Passing non-zero for secure_link requires Windows Bluetooth authentication and link encryption at the socket layer. The operating system manages device pairing and any passkey prompt. This is not the MultiNet AES-GCM room-key system, and the prototype does not yet provide the UDP room protocol, multi-peer host, reconnect/resume or Linux/macOS RFCOMM backend. mn_rfcomm_supported() reports whether the native backend was compiled for the current platform; it does not guarantee a Bluetooth radio or driver is present.
+
+The multinet_rfcomm_demo.exe Windows GUI is a two-device smoke-test application. Windows RFCOMM loopback is not supported, so actual transport validation requires two physical Bluetooth-capable Windows devices.

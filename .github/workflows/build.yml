@@ -12,8 +12,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify release version metadata
         run: |
-          cmake -DSOURCE_DIR="${GITHUB_WORKSPACE}" -DRELEASE_TAG=v0.6.0 -P scripts/check-release-version.cmake
-          cmake -DSOURCE_DIR="${GITHUB_WORKSPACE}" -DRELEASE_TAG=v0.6.0-rc.1 -P scripts/check-release-version.cmake
+          cmake -DSOURCE_DIR="${GITHUB_WORKSPACE}" -DRELEASE_TAG=v0.7.0 -P scripts/check-release-version.cmake
+          cmake -DSOURCE_DIR="${GITHUB_WORKSPACE}" -DRELEASE_TAG=v0.7.0-rc.1 -P scripts/check-release-version.cmake
       - name: Build without optional encryption
         run: |
           cmake -S . -B build-no-crypto -DMULTINET_ENABLE_ENCRYPTION=OFF -DMULTINET_BUILD_DEMO=OFF -DMULTINET_BUILD_TESTS=OFF
@@ -64,6 +64,14 @@ jobs:
             throw "The Windows GUI demo exited immediately instead of staying open."
           }
           Stop-Process -Id $gui.Id -Force
+
+          $rfcommGui = Start-Process -FilePath ".\\build\\Release\\multinet_rfcomm_demo.exe" -PassThru
+          Start-Sleep -Seconds 2
+          $rfcommGui.Refresh()
+          if ($rfcommGui.HasExited) {
+            throw "The Bluetooth RFCOMM GUI demo exited immediately instead of staying open."
+          }
+          Stop-Process -Id $rfcommGui.Id -Force
       - name: Run loopback integration tests
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Install package
