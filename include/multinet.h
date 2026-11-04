@@ -234,6 +234,10 @@ int mn_discover_auto(mn_instance *instance);
 int mn_discover_mdns(mn_instance *instance);
 /* Unicast discovery fallback for networks where broadcast is filtered. */
 int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname, uint16_t port);
+/* Directed discovery bound to a chosen local IPv4 adapter (Ethernet, Wi-Fi,
+   Wi-Fi Direct or Bluetooth PAN). */
+int mn_discover_at_from(mn_instance *instance, const char *local_ipv4,
+                        const char *ipv4_or_hostname, uint16_t port);
 /* Enumerate OS-managed IPv4 interfaces. Returns the total available count. */
 size_t mn_get_interfaces(mn_interface *interfaces, size_t capacity);
 /* Send discovery on one selected interface's IPv4 directed-broadcast address. */

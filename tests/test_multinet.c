@@ -288,6 +288,22 @@ int main(void) {
     CHECK(discovered_count == 1 &&
           strcmp(discovered_rooms[0].name, "Local Test") == 0,
           "unicast discovery finds room without LAN broadcast");
+    CHECK(!mn_discover_at_from(scanner, "", "127.0.0.1", config.port),
+          "reject directed discovery with an empty local adapter");
+    CHECK(mn_discover_at_from(scanner, loopback_interface.address,
+                              "127.0.0.1", config.port),
+          "start directed discovery bound to an explicit IPv4 adapter");
+    discovered_count = 0;
+    for (iteration = 0; iteration < 200; ++iteration) {
+        mn_update(host, 0.01f);
+        mn_update(scanner, 0.01f);
+        discovered_count = mn_get_rooms(scanner, discovered_rooms, MN_MAX_ROOMS);
+        if (discovered_count > 0) break;
+        sleep_ms(5);
+    }
+    CHECK(discovered_count == 1 &&
+          strcmp(discovered_rooms[0].name, "Local Test") == 0,
+          "interface-bound unicast discovery finds the room");
 
     mn_get_info(scanner, &scanner_info);
     if (scanner_info.mdns_available) {

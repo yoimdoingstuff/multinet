@@ -2740,8 +2740,10 @@ int mn_discover_mdns(mn_instance *instance) {
     return 1;
 }
 
-int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname,
-                   uint16_t port) {
+static int mn_discover_at_internal(mn_instance *instance,
+                                   const char *local_ipv4,
+                                   const char *ipv4_or_hostname,
+                                   uint16_t port) {
     struct addrinfo hints;
     struct addrinfo *result = NULL;
     struct sockaddr_in destination;
@@ -2756,6 +2758,11 @@ int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname,
         return 0;
     }
     if (instance->info.role == MN_ROLE_CLIENT) mn_leave(instance);
+    if (local_ipv4 && local_ipv4[0] &&
+        !mn_rebind_socket(instance, local_ipv4)) {
+        mn_set_error(instance, "Could not bind discovery to the selected local interface");
+        return 0;
+    }
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
@@ -2785,8 +2792,19 @@ int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname,
     return 1;
 }
 
+int mn_discover_at(mn_instance *instance, const char *ipv4_or_hostname,
+                   uint16_t port) {
+    return mn_discover_at_internal(instance, NULL, ipv4_or_hostname, port);
+}
 
-
+int mn_discover_at_from(mn_instance *instance, const char *local_ipv4,
+                        const char *ipv4_or_hostname, uint16_t port) {
+    if (!local_ipv4 || !local_ipv4[0]) {
+        if (instance) mn_set_error(instance, "The selected discovery interface address is empty");
+        return 0;
+    }
+    return mn_discover_at_internal(instance, local_ipv4, ipv4_or_hostname, port);
+}
 
 int mn_discover_on(mn_instance *instance, const mn_interface *network_interface) {
     struct sockaddr_in destination;

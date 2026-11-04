@@ -275,15 +275,23 @@ static void do_host(void) {
 
 static void do_scan(void) {
     const mn_interface *iface = selected_interface();
+    char host[64];
     int ok;
+    get_text(g_host, host, sizeof(host), "");
     mn_stop_discovery(g_network);
     g_room_count = 0;
     SendMessageA(g_rooms_list, LB_RESETCONTENT, 0, 0);
-    ok = iface ? mn_discover_on(g_network, iface) : mn_discover_auto(g_network);
+    if (host[0])
+        ok = iface ? mn_discover_at_from(g_network, iface->address, host, selected_port())
+                   : mn_discover_at(g_network, host, selected_port());
+    else
+        ok = iface ? mn_discover_on(g_network, iface) : mn_discover_auto(g_network);
     if (!ok) {
         mn_info info;
         mn_get_info(g_network, &info);
         add_logf("Discovery could not start: %s", info.last_error);
+    } else if (host[0]) {
+        add_logf("Probing %s directly using the selected adapter (if any)...", host);
     } else {
         add_log(iface ? "Searching on the selected adapter..." :
                         "Searching all active LAN adapters (broadcast, subnet probes and mDNS)...");
@@ -348,7 +356,7 @@ static void create_controls(HWND window) {
     g_interface = make_control("COMBOBOX", "", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
                                ID_INTERFACE, window);
     g_label_host = make_control("STATIC", "Host IP", 0, -1, window);
-    g_host = make_control("EDIT", "127.0.0.1", WS_BORDER | ES_AUTOHSCROLL, ID_HOST, window);
+    g_host = make_control("EDIT", "", WS_BORDER | ES_AUTOHSCROLL, ID_HOST, window);
     make_control("BUTTON", "Host room", WS_TABSTOP, ID_HOST_BTN, window);
     make_control("BUTTON", "Find rooms", WS_TABSTOP, ID_SCAN_BTN, window);
     make_control("BUTTON", "Join selected / IP", WS_TABSTOP, ID_JOIN_BTN, window);
