@@ -21,6 +21,8 @@
 #define ID_START_BTN  1014
 #define ID_SEND_TEXT  1015
 #define ID_SEND_BTN   1016
+#define ID_REFRESH_BTN 1017
+#define ID_PING_BTN    1018
 #define ID_ROOMS      1020
 #define ID_PLAYERS    1021
 #define ID_LOG        1022
@@ -345,6 +347,47 @@ static void do_send(void) {
         add_log("Message could not be queued.");
 }
 
+static void do_refresh_adapters(void) {
+    refresh_interface_list();
+    add_log("Network adapters refreshed. Newly connected Bluetooth PAN and Wi-Fi Direct links should now appear.");
+}
+
+static void do_ping(void) {
+    mn_info info;
+    uint32_t target_player_id = 0;
+    if (!g_network) return;
+    mn_get_info(g_network, &info);
+    if (info.role == MN_ROLE_CLIENT && info.status == MN_STATUS_CONNECTED) {
+        target_player_id = 0;
+    } else if (info.role == MN_ROLE_HOST && info.status == MN_STATUS_HOSTING) {
+        mn_player players[MN_MAX_PLAYERS];
+        size_t count = mn_get_players(g_network, players, MN_MAX_PLAYERS);
+        LRESULT selected = SendMessageA(g_players_list, LB_GETCURSEL, 0, 0);
+        size_t i;
+        if (selected != LB_ERR && (size_t)selected < count)
+            target_player_id = players[selected].id;
+        else {
+            for (i = 0; i < count; ++i) {
+                if (players[i].id != info.local_player_id) {
+                    target_player_id = players[i].id;
+                    break;
+                }
+            }
+        }
+        if (target_player_id == 0 || target_player_id == info.local_player_id) {
+            add_log("Select a remote player to ping, or wait for someone to join.");
+            return;
+        }
+    } else {
+        add_log("Join or host a room before measuring latency.");
+        return;
+    }
+    if (mn_ping(g_network, target_player_id))
+        add_log("Ping request sent. The result will appear in the status line.");
+    else
+        add_log("Ping could not start. A previous ping may still be pending.");
+}
+
 static void create_controls(HWND window) {
     g_label_name = make_control("STATIC", "Player", 0, -1, window);
     g_name = make_control("EDIT", "Player", WS_BORDER | ES_AUTOHSCROLL, ID_NAME, window);
@@ -362,6 +405,8 @@ static void create_controls(HWND window) {
     make_control("BUTTON", "Join selected / IP", WS_TABSTOP, ID_JOIN_BTN, window);
     make_control("BUTTON", "Leave", WS_TABSTOP, ID_LEAVE_BTN, window);
     make_control("BUTTON", "Start match", WS_TABSTOP, ID_START_BTN, window);
+    make_control("BUTTON", "Refresh adapters", WS_TABSTOP, ID_REFRESH_BTN, window);
+    make_control("BUTTON", "Ping", WS_TABSTOP, ID_PING_BTN, window);
     g_label_rooms = make_control("STATIC", "Discovered rooms", 0, -1, window);
     g_label_players = make_control("STATIC", "Players in session", 0, -1, window);
     g_rooms_list = make_control("LISTBOX", "", WS_BORDER | LBS_NOTIFY | WS_VSCROLL,
@@ -409,6 +454,8 @@ static void layout_controls(HWND window) {
     SetWindowPos(GetDlgItem(window, ID_JOIN_BTN), NULL, 413, 47, 135, 27, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window, ID_LEAVE_BTN), NULL, 554, 47, 75, 27, SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window, ID_START_BTN), NULL, 635, 47, 100, 27, SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(window, ID_REFRESH_BTN), NULL, 741, 47, 105, 27, SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(window, ID_PING_BTN), NULL, 852, 47, 58, 27, SWP_NOZORDER);
     log_top = height - 190;
     SetWindowPos(g_label_rooms, NULL, 8, 80, room_width - 12, 18, SWP_NOZORDER);
     SetWindowPos(g_label_players, NULL, room_width, 80, player_width - 8, 18, SWP_NOZORDER);
@@ -436,6 +483,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
             SetTimer(window, 1, 33, NULL);
             add_log("MultiNet GUI demo ready.");
             add_log("Connect Ethernet, Wi-Fi, Wi-Fi Direct or Bluetooth PAN in Windows first.");
+            add_log("Use Refresh adapters after connecting a new Bluetooth PAN or Wi-Fi Direct link.");
             layout_controls(window);
             return 0;
         case WM_SIZE:
@@ -443,7 +491,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
             return 0;
         case WM_GETMINMAXINFO: {
             MINMAXINFO *limits = (MINMAXINFO *)lparam;
-            limits->ptMinTrackSize.x = 780;
+            limits->ptMinTrackSize.x = 930;
             limits->ptMinTrackSize.y = 560;
             return 0;
         }
@@ -474,6 +522,8 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message,
                         add_logf("Could not start match: %s", info.last_error);
                     }
                     return 0;
+                case ID_REFRESH_BTN: do_refresh_adapters(); return 0;
+                case ID_PING_BTN: do_ping(); return 0;
                 case ID_SEND_BTN: do_send(); return 0;
                 case ID_ROOMS:
                     if (HIWORD(wparam) == LBN_SELCHANGE) {
